@@ -1,0 +1,67 @@
+[project]
+name = "api"
+version = "0.1.0"
+description = "Reusable FastAPI backend boilerplate"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.18.4",
+    "boto3>=1.41.5",
+    "fastapi[standard]>=0.136.3",
+    "pwdlib[argon2]>=0.3.0",
+    "psycopg[binary]>=3.3.4",
+    "pydantic-settings>=2.14.1",
+    "python-dotenv>=1.2.2",
+    "python-jose[cryptography]>=3.5.0",
+    "redis>=6.4.0",
+    "rq>=2.6.1",
+    "sentry-sdk[fastapi]>=2.47.0",
+    "sqlalchemy>=2.0.50",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+explicit_package_bases = true
+strict = true
+warn_unused_configs = true
+disallow_any_generics = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=1.14.0",
+    "pre-commit>=4.0.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.15.15",
+    "types-python-jose>=3.5.0.20250531",
+]
