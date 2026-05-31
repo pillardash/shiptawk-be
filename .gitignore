@@ -22,7 +22,7 @@ wheels/
 htmlcov/
 
 # Local object storage
-storage
+/storage/
 
 # IDEs
 .idea/
