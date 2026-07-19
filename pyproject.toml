@@ -1,7 +1,7 @@
 [project]
-name = "api"
+name = "shiptawk-backend"
 version = "0.1.0"
-description = "Reusable FastAPI backend boilerplate"
+description = "FastAPI backend for the Shiptawk AI marketing operator"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

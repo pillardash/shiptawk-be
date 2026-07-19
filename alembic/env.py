@@ -9,7 +9,9 @@ from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
 from app.domains.auth import models as auth_models  # noqa: F401
+from app.domains.products import models as product_models  # noqa: F401
 from app.domains.users import models as user_models  # noqa: F401
+from app.domains.workspaces import models as workspace_models  # noqa: F401
 
 config = context.config
 

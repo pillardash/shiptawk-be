@@ -1,7 +1,12 @@
-FastAPI Backend Boilerplate
-===========================
+Shiptawk Backend
+================
 
-Reusable FastAPI backend boilerplate for scalable PostgreSQL-backed APIs.
+FastAPI backend for the Shiptawk AI marketing operator, derived from the reusable
+FastAPI boilerplate documented in `BOILERPLATE_PROVENANCE.md`.
+
+Cross-repository architecture and migration plans live in the parent `../docs`
+directory. Product behavior belongs here; reusable infrastructure improvements should
+be synchronized selectively with the boilerplate.
 
 ## Requirements
 

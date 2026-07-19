@@ -1,85 +1,67 @@
-# FastAPI Boilerplate Engineering Guide
+# Shiptawk Backend Engineering Guide
 
-## Purpose
+## Authority And Scope
 
-- This repository is a reusable, production-oriented FastAPI backend foundation.
-- Keep changes infrastructure-first, scalable, maintainable, secure, and useful outside any one product.
-- Auth and user domains are existing reusable capabilities. Do not add product-specific domains or behavior.
-- Prefer small, focused changes and remove dead or placeholder code instead of preserving speculative scaffolding.
+- This repository is Shiptawk's FastAPI product backend, derived from the reusable boilerplate identified in `BOILERPLATE_PROVENANCE.md`.
+- The parent `../AGENTS.md` and `../docs/ai-marketing-operator-conversion-plan.md` govern cross-repository product and migration decisions.
+- This backend owns authentication, authorization, workspace tenancy, persistence, migrations, integrations, webhooks, durable workflows, AI execution, approvals, publishing policy, and audit trails.
+- Keep the backend independently runnable and testable from the Next.js frontend.
 
-## Reusability Standard
+## Product Boundaries
 
-- Generic configuration, middleware, observability, database, auth, cache, job, email, storage, and provider-neutral AI primitives may belong here.
-- Product tables, vocabulary, prompts, workflows, provider choices, policy thresholds, and UI assumptions do not belong here.
-- Do not add a feature solely because one downstream product might need it.
-- An upstream contribution must be independently configurable, tested without product fixtures, documented, and free of product assumptions.
+- Put Shiptawk domains under `app/domains/`; do not place product behavior in generic infrastructure modules.
+- Temporal workflows orchestrate durable work. Domain services own decisions and invariants.
+- Product prompts, evidence policies, evaluations, and model-routing policy live here, not in the reusable boilerplate.
+- During migration, each use case has exactly one mutation and AI execution authority.
+- Do not enable a FastAPI write path until its live schema, ownership, idempotency, rollout, and rollback behavior are reconciled.
 
-## API Contract
+## Tenancy And Security
 
-- Public request and response fields use camelCase; Python internals use snake_case.
-- Public schemas inherit from `app.shared.schemas.ApiSchema`.
-- Manually serialized public schemas use `model_dump(by_alias=True)`.
-- Error payloads expose `requestId`, not `request_id`.
-- Never expose ORM models, token fields, or credential-bearing persistence types directly.
-- Endpoint tests assert public casing and response boundaries.
+- Require workspace context in every tenant-aware repository method.
+- Authorize membership server-side before accessing workspace resources.
+- Add negative cross-workspace tests for every new resource type.
+- Never expose ORM models, encrypted credentials, provider tokens, or persistence-only fields through API schemas.
+- Preserve compatibility with existing encrypted credentials until migration is complete.
+- Never log or send credentials, private source, unrestricted payloads, or raw sensitive prompts to providers.
 
-## Architecture
+## Contracts
 
-- `app/api/` owns HTTP routing and API versioning.
-- `app/core/` owns configuration, logging, middleware, lifecycle, and exception handling.
-- `app/db/` owns async SQLAlchemy setup, sessions, and database health checks.
-- `app/domains/` owns reusable domain modules and their transaction-aware use cases.
-- `app/services/` owns replaceable infrastructure and provider adapters.
-- `app/shared/` owns reusable application primitives.
-- Domain code receives dependencies through typed interfaces; it does not construct engines or infrastructure clients.
-- Use-case/application services own transaction boundaries when multiple writes must be atomic.
+- Public HTTP APIs are versioned and use camelCase through `ApiSchema`.
+- Python internals use snake_case.
+- Generate the frontend TypeScript client from OpenAPI; do not maintain handwritten duplicate contracts.
+- Make contract migrations additive and preserve compatibility during frontend adoption.
+- Version cross-process events and JSON payloads explicitly; use stable IDs and idempotency keys.
 
-## FastAPI Conventions
+## AI And Workflows
 
-- Use `create_app()` from `app/main.py`.
-- Keep `/health` as unversioned liveness and dependency checks in readiness endpoints.
-- Keep versioned routes under `API_PREFIX`, default `/api/v1`.
-- Use centralized exception handling for consistent error responses.
-- Propagate request, trace, actor, and tenant context into asynchronous work without exposing secrets.
-- Manage database, cache, queue, storage, and telemetry resources through application lifespan hooks.
+- Keep AI provider SDKs behind provider-neutral adapters.
+- Separate use cases, prompt versions, transport, schema validation, routing/fallback, durable execution, and telemetry.
+- Validate structured model output before domain use; malformed output is a controlled failure.
+- Persist provider, model, prompt version, parameters, latency, usage, cost estimate, status, and correlation IDs without sensitive prompt logging.
+- Classify retryable transport failures separately from invalid output.
+- Make fallback explicit and observable.
+- Required tests use deterministic fakes or sanitized recordings, never live providers.
+- Treat insufficient evidence as a valid no-recommendation outcome.
 
 ## Database And Migrations
 
-- Use async SQLAlchemy 2.x with the shared async engine and session utilities.
-- Use PostgreSQL in production and PostgreSQL-backed integration tests for database-specific behavior.
-- Use Alembic for migrations; migrations run as an explicit deployment step, not during API replica startup.
-- Test `alembic upgrade head` in CI.
-- Inspect generated migrations and preserve downgrade behavior unless an irreversible migration is explicitly documented.
-- Do not create engines or sessions in domain code.
+- Use shared async SQLAlchemy sessions and PostgreSQL.
+- Use Alembic for migrations and test upgrades against PostgreSQL.
+- Reconcile the live Supabase schema before enabling migrated writes.
+- Do not use production dual writes.
+- Preserve existing IDs, history, external-delivery identifiers, and publishing receipts.
 
-## Jobs And Side Effects
+## Boilerplate Synchronization
 
-- Stable task names form the producer/worker contract; do not expose arbitrary Python import paths.
-- Route jobs explicitly to configured queues and ensure deployed workers consume those queues.
-- Define retryability, backoff, timeout, idempotency, and dead-letter behavior for side effects.
-- Prefer a transactional outbox when a committed database change requires guaranteed publication.
-- Job payloads contain identifiers and artifact references rather than large or sensitive objects.
-- Correlation and trace metadata must survive enqueue and execution.
-
-## Provider-Neutral AI Primitives
-
-- Generic AI support may define invocation, structured output, streaming, embeddings, usage, and test-double contracts.
-- Keep provider SDK details inside adapters and make heavyweight provider dependencies optional where practical.
-- Routing, retry, fallback, concurrency, and budget policies must be explicit and observable.
-- Persist or emit model, provider, latency, usage, cost estimate, and failure category without recording sensitive prompts by default.
-- Required tests use deterministic fake providers or sanitized recordings, never live calls.
-- Product prompts, tools, evaluations, safety thresholds, and agent workflows remain downstream concerns.
-
-## Security And Tenancy
-
-- Hash opaque tokens at rest and never log secrets or credentials.
-- Browser cookie authentication requires explicit HttpOnly, Secure, SameSite, rotation, and CSRF design.
-- Reusable authorization primitives may live here; downstream workspace or organization semantics do not.
-- Tenant-aware downstream repositories must make tenant context mandatory rather than optional.
+- Generic fixes should be implemented and verified in `/home/mrprotocoll/Documents/projects/fastapi-boilerplate` first when practical.
+- Upstream product-proven abstractions only after removing Shiptawk assumptions and fixtures.
+- Keep upstream candidates isolated. Never merge this product tree wholesale into the boilerplate.
+- Update `BOILERPLATE_PROVENANCE.md` when intentionally refreshing the derived baseline.
+- This repository must not track the sibling frontend or parent coordination files.
 
 ## Verification
 
-After backend changes, run:
+Run after backend changes:
 
 ```bash
 uv run ruff format --check .
@@ -88,7 +70,7 @@ uv run mypy app tests
 uv run pytest --cov
 ```
 
-- Run PostgreSQL integration and Alembic checks for database or migration changes.
-- Add negative authorization tests for auth or tenancy primitives.
-- Add retry, duplicate-delivery, and idempotency tests for jobs and webhooks.
+- Run Alembic upgrades against PostgreSQL for migration changes.
+- Add API contract tests for endpoint changes.
+- Add duplicate-delivery and retry tests for jobs, webhooks, and side effects.
 - Keep the Docker image buildable after dependency or startup changes.

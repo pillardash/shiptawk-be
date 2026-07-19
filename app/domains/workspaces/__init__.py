@@ -1,0 +1,1 @@
+"""Workspace tenancy domain."""
