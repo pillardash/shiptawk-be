@@ -1,17 +1,21 @@
-from collections.abc import Generator, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.core.config import get_settings
 
 
 @lru_cache
-def get_engine() -> Engine:
+def get_engine() -> AsyncEngine:
     settings = get_settings()
-    return create_engine(
+    return create_async_engine(
         settings.database_url,
         pool_pre_ping=True,
         pool_size=settings.database_pool_size,
@@ -23,29 +27,24 @@ def get_engine() -> Engine:
 
 
 @lru_cache
-def get_sessionmaker() -> sessionmaker[Session]:
-    return sessionmaker(bind=get_engine(), autoflush=False, autocommit=False)
+def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(bind=get_engine(), autoflush=False, expire_on_commit=False)
 
 
-def get_db() -> Generator[Session, None, None]:
-    db = get_sessionmaker()()
-    try:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with get_sessionmaker()() as db:
         yield db
-    finally:
-        db.close()
 
 
-@contextmanager
-def session_scope() -> Iterator[Session]:
-    db = get_sessionmaker()()
-    try:
-        yield db
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+@asynccontextmanager
+async def session_scope() -> AsyncIterator[AsyncSession]:
+    async with get_sessionmaker()() as db:
+        try:
+            yield db
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 def reset_database_state() -> None:

@@ -14,8 +14,7 @@ class StoredObject:
 
 
 class StorageService(Protocol):
-    def put(self, key: str, content: bytes, *, content_type: str | None = None) -> StoredObject:
-        ...
+    def put(self, key: str, content: bytes, *, content_type: str | None = None) -> StoredObject: ...
 
     def get(self, key: str) -> bytes: ...
 

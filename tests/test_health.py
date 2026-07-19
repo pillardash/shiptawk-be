@@ -29,7 +29,10 @@ def test_versioned_health_endpoint() -> None:
 
 
 def test_readiness_endpoint(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr(health_module, "check_database_ready", lambda: None)
+    async def pass_database_check() -> None:
+        return None
+
+    monkeypatch.setattr(health_module, "check_database_ready", pass_database_check)
     client = TestClient(create_app())
 
     response = client.get("/api/v1/ready")
@@ -41,7 +44,7 @@ def test_readiness_endpoint(monkeypatch: MonkeyPatch) -> None:
 def test_readiness_endpoint_returns_503_when_database_is_unavailable(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    def fail_database_check() -> None:
+    async def fail_database_check() -> None:
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(health_module, "check_database_ready", fail_database_check)

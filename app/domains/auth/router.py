@@ -3,7 +3,7 @@ from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_jobs
 from app.core.config import get_settings
@@ -42,7 +42,7 @@ from app.shared.responses import MessageResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
-DbDep = Annotated[Session, Depends(get_db)]
+DbDep = Annotated[AsyncSession, Depends(get_db)]
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
 
 
@@ -58,8 +58,8 @@ def get_ip_address(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def build_auth_response(
-    db: Session,
+async def build_auth_response(
+    db: AsyncSession,
     user: User,
     *,
     request: Request,
@@ -68,7 +68,7 @@ def build_auth_response(
     return AuthResponse(
         user=UserResponse.model_validate(user),
         access_token=create_access_token(str(user.id)),
-        refresh_token=create_refresh_session(
+        refresh_token=await create_refresh_session(
             db,
             user,
             user_agent=request.headers.get("user-agent"),
@@ -98,13 +98,13 @@ def enqueue_job_safely(
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def register(payload: UserCreate, request: Request, db: DbDep) -> AuthResponse:
-    user = register_user(db, email=payload.email, password=payload.password)
-    return build_auth_response(db, user, request=request, device_name=payload.device_name)
+async def register(payload: UserCreate, request: Request, db: DbDep) -> AuthResponse:
+    user = await register_user(db, email=payload.email, password=payload.password)
+    return await build_auth_response(db, user, request=request, device_name=payload.device_name)
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(
+async def login(
     payload: UserLogin,
     request: Request,
     db: DbDep,
@@ -113,32 +113,32 @@ def login(
     ip_address = get_ip_address(request)
     check_login_throttle(store=rate_limit_store, email=payload.email, ip_address=ip_address)
     try:
-        user = authenticate_user(db, email=payload.email, password=payload.password)
+        user = await authenticate_user(db, email=payload.email, password=payload.password)
     except UnauthorizedError:
         record_login_failure(store=rate_limit_store, email=payload.email, ip_address=ip_address)
         raise
-    return build_auth_response(db, user, request=request, device_name=payload.device_name)
+    return await build_auth_response(db, user, request=request, device_name=payload.device_name)
 
 
 @router.post("/refresh", response_model=AuthResponse)
-def refresh(payload: RefreshTokenRequest, request: Request, db: DbDep) -> AuthResponse:
-    user = refresh_session(db, payload.refresh_token)
-    return build_auth_response(db, user, request=request, device_name=payload.device_name)
+async def refresh(payload: RefreshTokenRequest, request: Request, db: DbDep) -> AuthResponse:
+    user = await refresh_session(db, payload.refresh_token)
+    return await build_auth_response(db, user, request=request, device_name=payload.device_name)
 
 
 @router.post("/logout", response_model=MessageResponse)
-def logout(payload: LogoutRequest, db: DbDep) -> MessageResponse:
-    revoke_refresh_session(db, payload.refresh_token)
+async def logout(payload: LogoutRequest, db: DbDep) -> MessageResponse:
+    await revoke_refresh_session(db, payload.refresh_token)
     return MessageResponse(message="Logged out successfully.")
 
 
 @router.post("/change-password", response_model=MessageResponse)
-def change_password_endpoint(
+async def change_password_endpoint(
     payload: ChangePasswordRequest,
     current_user: CurrentUserDep,
     db: DbDep,
 ) -> MessageResponse:
-    change_password(
+    await change_password(
         db,
         current_user,
         current_password=payload.current_password,
@@ -148,12 +148,14 @@ def change_password_endpoint(
 
 
 @router.post("/forgot-password", response_model=MessageResponse)
-def forgot_password(
+async def forgot_password(
     payload: EmailRequest,
     db: DbDep,
     jobs: JobsDep,
 ) -> MessageResponse:
-    token = create_auth_token(db, email=payload.email, purpose=AuthTokenPurpose.password_reset)
+    token = await create_auth_token(
+        db, email=payload.email, purpose=AuthTokenPurpose.password_reset
+    )
     if token is not None:
         enqueue_job_safely(
             jobs,
@@ -169,7 +171,7 @@ def forgot_password(
 
 
 @router.post("/reset-password", response_model=MessageResponse)
-def reset_password_endpoint(
+async def reset_password_endpoint(
     payload: ResetPasswordRequest,
     request: Request,
     db: DbDep,
@@ -186,17 +188,19 @@ def reset_password_endpoint(
         token=payload.token,
         ip_address=ip_address,
     )
-    reset_password(db, token=payload.token, new_password=payload.new_password)
+    await reset_password(db, token=payload.token, new_password=payload.new_password)
     return MessageResponse(message="Password reset successfully.")
 
 
 @router.post("/email-verification/request", response_model=MessageResponse)
-def request_email_verification(
+async def request_email_verification(
     payload: EmailRequest,
     db: DbDep,
     jobs: JobsDep,
 ) -> MessageResponse:
-    token = create_auth_token(db, email=payload.email, purpose=AuthTokenPurpose.email_verification)
+    token = await create_auth_token(
+        db, email=payload.email, purpose=AuthTokenPurpose.email_verification
+    )
     if token is not None:
         enqueue_job_safely(
             jobs,
@@ -212,8 +216,8 @@ def request_email_verification(
 
 
 @router.post("/email-verification/verify", response_model=UserResponse)
-def verify_email_endpoint(payload: VerifyEmailRequest, db: DbDep) -> UserResponse:
-    user = verify_email(db, token=payload.token)
+async def verify_email_endpoint(payload: VerifyEmailRequest, db: DbDep) -> UserResponse:
+    user = await verify_email(db, token=payload.token)
     return UserResponse.model_validate(user)
 
 

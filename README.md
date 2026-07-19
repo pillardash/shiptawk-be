@@ -16,7 +16,8 @@ uv sync
 cp .env.example .env
 ```
 
-Use `DATABASE_URL` in `.env` for your local PostgreSQL instance.
+Use an async SQLAlchemy URL such as
+`postgresql+psycopg://postgres:postgres@localhost:5432/app` for `DATABASE_URL` in `.env`.
 
 ## Run
 
@@ -54,7 +55,7 @@ Auth endpoints:
 ```bash
 make check
 
-uv run pytest
+uv run pytest --cov
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app tests
@@ -127,13 +128,13 @@ Health endpoints:
 
 ## Database
 
-- The project uses sync SQLAlchemy with PostgreSQL.
+- The project uses SQLAlchemy 2.x `AsyncSession` with PostgreSQL and psycopg's async driver.
 - Engine pool settings are configured through `DATABASE_POOL_SIZE`, `DATABASE_MAX_OVERFLOW`, `DATABASE_POOL_TIMEOUT`, and `DATABASE_POOL_RECYCLE`.
 - Future SQLAlchemy models should inherit from `app.db.base.BaseModel` by default.
 - `BaseModel` provides a UUID primary key, `created_at`, `updated_at`, `created_by`, `updated_by`, and `deleted_at` columns.
 - `created_by` and `updated_by` are nullable UUID audit columns without foreign keys, so the boilerplate remains decoupled from any future auth/user domain.
 - `deleted_at` is a nullable indexed timestamp for soft deletes. Domain queries should filter it out unless they intentionally include deleted rows.
-- Use `get_db()` for FastAPI dependencies and `session_scope()` for scripts/services that need an explicit transaction boundary.
+- Use async `get_db()` for FastAPI dependencies and `async with session_scope()` for scripts/services that need an explicit transaction boundary.
 - Alembic autogenerate uses stable constraint naming conventions and type comparison.
 
 ## API Contract

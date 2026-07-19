@@ -33,6 +33,7 @@ select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.12"
@@ -56,6 +57,7 @@ fail_under = 80
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.22.1",
     "httpx>=0.28.1",
     "mypy>=1.14.0",
     "pre-commit>=4.0.0",

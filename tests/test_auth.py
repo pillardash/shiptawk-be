@@ -1,11 +1,17 @@
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from typing import cast
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
-from sqlalchemy import StaticPool, create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import StaticPool, select
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.core.security import (
     create_access_token,
@@ -42,29 +48,80 @@ class FakeJobService:
         return JobHandle(id="job-id", task_name=task_name, queue=queue or "default")
 
 
+def run_with_db[T](client: TestClient, operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
+    async def execute() -> T:
+        app = cast(FastAPI, client.app)
+        session_factory = app.state.testing_session
+        async with session_factory() as db:
+            return await operation(db)
+
+    assert client.portal is not None
+    return client.portal.call(execute)
+
+
 @pytest.fixture
 def auth_client() -> Generator[TestClient, None, None]:
-    engine = create_engine(
-        "sqlite+pysqlite:///:memory:",
-        connect_args={"check_same_thread": False},
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(engine)
-    testing_session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    testing_session = async_sessionmaker(engine, expire_on_commit=False)
 
-    def override_get_db() -> Generator[Session, None, None]:
-        db = testing_session()
-        try:
+    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+        async with testing_session() as db:
             yield db
-        finally:
-            db.close()
 
     app = create_app()
+    app.state.testing_session = testing_session
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as client:
+        assert client.portal is not None
+        client.portal.call(create_tables, engine)
         yield client
+        client.portal.call(drop_tables, engine)
+        client.portal.call(engine.dispose)
     app.dependency_overrides.clear()
-    Base.metadata.drop_all(engine)
+
+
+async def create_tables(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+
+async def drop_tables(engine: AsyncEngine) -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+
+
+async def first_model[T](db: AsyncSession, model: type[T]) -> T | None:
+    return (await db.scalars(select(model))).first()
+
+
+async def first_active_session(db: AsyncSession) -> AuthSession | None:
+    statement = select(AuthSession).where(
+        AuthSession.revoked_at.is_(None), AuthSession.last_used_at.is_(None)
+    )
+    return (await db.scalars(statement)).first()
+
+
+async def set_user_state(
+    db: AsyncSession, *, active: bool | None = None, deleted: bool = False
+) -> None:
+    user = await get_user_by_email(db, "user@example.com")
+    assert user is not None
+    if active is not None:
+        user.is_active = active
+    if deleted:
+        user.deleted_at = user.created_at
+    await db.commit()
+
+
+async def user_exists(db: AsyncSession) -> bool:
+    return await get_user_by_email(db, "user@example.com") is not None
+
+
+async def make_auth_token(db: AsyncSession, purpose: AuthTokenPurpose) -> str | None:
+    return await create_auth_token(db, email="user@example.com", purpose=purpose)
 
 
 def test_password_hashing_verifies_and_does_not_store_plain_password() -> None:
@@ -110,15 +167,11 @@ def test_register_stores_session_metadata(auth_client: TestClient) -> None:
     )
     assert response.status_code == 201
 
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    db = next(app.dependency_overrides[get_db]())
-    session = db.query(AuthSession).first()
+    session = run_with_db(auth_client, lambda db: first_model(db, AuthSession))
     assert session is not None
     assert session.user_agent == "pytest-agent"
     assert session.ip_address == "testclient"
     assert session.device_name == "Firefox on Linux"
-    db.close()
 
 
 def test_register_truncates_session_metadata(auth_client: TestClient) -> None:
@@ -133,14 +186,10 @@ def test_register_truncates_session_metadata(auth_client: TestClient) -> None:
     )
     assert response.status_code == 201
 
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    db = next(app.dependency_overrides[get_db]())
-    session = db.query(AuthSession).first()
+    session = run_with_db(auth_client, lambda db: first_model(db, AuthSession))
     assert session is not None
     assert len(session.user_agent or "") == 512
     assert len(session.device_name or "") == 120
-    db.close()
 
 
 def test_register_duplicate_email_returns_conflict(auth_client: TestClient) -> None:
@@ -179,18 +228,10 @@ def test_refresh_rotates_refresh_token(auth_client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json()["accessToken"]
     assert response.json()["refreshToken"] != refresh_token
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    db = next(app.dependency_overrides[get_db]())
-    active_session = (
-        db.query(AuthSession)
-        .filter(AuthSession.revoked_at.is_(None), AuthSession.last_used_at.is_(None))
-        .first()
-    )
+    active_session = run_with_db(auth_client, first_active_session)
     assert active_session is not None
     assert active_session.user_agent == "rotated-agent"
     assert active_session.device_name == "Mobile App"
-    db.close()
     reused_response = auth_client.post("/api/v1/auth/refresh", json={"refreshToken": refresh_token})
     assert reused_response.status_code == 401
 
@@ -333,15 +374,7 @@ def test_login_rejects_inactive_user(auth_client: TestClient) -> None:
         json={"email": "user@example.com", "password": "password123"},
     )
 
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    override = app.dependency_overrides[get_db]
-    db = next(override())
-    user = get_user_by_email(db, "user@example.com")
-    assert user is not None
-    user.is_active = False
-    db.commit()
-    db.close()
+    run_with_db(auth_client, lambda db: set_user_state(db, active=False))
 
     response = auth_client.post(
         "/api/v1/auth/login",
@@ -358,17 +391,8 @@ def test_repository_filters_soft_deleted_users(auth_client: TestClient) -> None:
         json={"email": "user@example.com", "password": "password123"},
     )
 
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    override = app.dependency_overrides[get_db]
-    db = next(override())
-    user = get_user_by_email(db, "user@example.com")
-    assert user is not None
-    user.deleted_at = user.created_at
-    db.commit()
-
-    assert get_user_by_email(db, "user@example.com") is None
-    db.close()
+    run_with_db(auth_client, lambda db: set_user_state(db, deleted=True))
+    assert run_with_db(auth_client, user_exists) is False
 
 
 def test_forgot_password_is_enumeration_safe(auth_client: TestClient) -> None:
@@ -458,14 +482,8 @@ def test_email_verification_request_enqueues_email_for_existing_user(
 
 
 def test_unsupported_auth_token_purpose_is_rejected(auth_client: TestClient) -> None:
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    db = next(app.dependency_overrides[get_db]())
-
     with pytest.raises(ValueError):
-        create_auth_token(db, email="user@example.com", purpose=AuthTokenPurpose.magic_login)
-
-    db.close()
+        run_with_db(auth_client, lambda db: make_auth_token(db, AuthTokenPurpose.magic_login))
 
 
 def test_reset_password_token_works_once(auth_client: TestClient) -> None:
@@ -473,15 +491,13 @@ def test_reset_password_token_works_once(auth_client: TestClient) -> None:
         "/api/v1/auth/register",
         json={"email": "user@example.com", "password": "password123"},
     )
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    db = next(app.dependency_overrides[get_db]())
-    token = create_auth_token(db, email="user@example.com", purpose=AuthTokenPurpose.password_reset)
+    token = run_with_db(
+        auth_client, lambda db: make_auth_token(db, AuthTokenPurpose.password_reset)
+    )
     assert token is not None
-    stored_token = db.query(AuthToken).first()
+    stored_token = run_with_db(auth_client, lambda db: first_model(db, AuthToken))
     assert stored_token is not None
     assert stored_token.token_hash != token
-    db.close()
 
     response = auth_client.post(
         "/api/v1/auth/reset-password",
@@ -525,14 +541,10 @@ def test_email_verification_token_marks_user_verified(auth_client: TestClient) -
         "/api/v1/auth/register",
         json={"email": "user@example.com", "password": "password123"},
     )
-    app = auth_client.app
-    assert isinstance(app, FastAPI)
-    db = next(app.dependency_overrides[get_db]())
-    token = create_auth_token(
-        db, email="user@example.com", purpose=AuthTokenPurpose.email_verification
+    token = run_with_db(
+        auth_client, lambda db: make_auth_token(db, AuthTokenPurpose.email_verification)
     )
     assert token is not None
-    db.close()
 
     response = auth_client.post("/api/v1/auth/email-verification/verify", json={"token": token})
 

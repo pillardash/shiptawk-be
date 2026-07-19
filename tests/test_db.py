@@ -1,6 +1,5 @@
-from contextlib import suppress
 from typing import cast
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from pytest import MonkeyPatch
 from sqlalchemy.orm import Mapped, mapped_column
@@ -53,7 +52,7 @@ def test_engine_uses_configured_pool_settings(monkeypatch: MonkeyPatch) -> None:
         database_echo=True,
     )
 
-    monkeypatch.setattr(session_module, "create_engine", create_engine)
+    monkeypatch.setattr(session_module, "create_async_engine", create_engine)
     monkeypatch.setattr(session_module, "get_settings", lambda: settings)
     session_module.reset_database_state()
 
@@ -70,56 +69,65 @@ def test_engine_uses_configured_pool_settings(monkeypatch: MonkeyPatch) -> None:
     )
 
 
-def test_get_db_closes_session(monkeypatch: MonkeyPatch) -> None:
-    db = Mock()
-    monkeypatch.setattr(session_module, "get_sessionmaker", lambda: Mock(return_value=db))
+async def test_get_db_closes_session(monkeypatch: MonkeyPatch) -> None:
+    db = AsyncMock()
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = db
+    monkeypatch.setattr(
+        session_module, "get_sessionmaker", lambda: Mock(return_value=session_context)
+    )
 
     dependency = get_db()
-    assert next(dependency) is db
+    assert await anext(dependency) is db
+    await dependency.aclose()
 
-    with suppress(StopIteration):
-        next(dependency)
-
-    db.close.assert_called_once_with()
+    session_context.__aexit__.assert_awaited_once()
 
 
-def test_session_scope_commits_and_closes(monkeypatch: MonkeyPatch) -> None:
-    db = Mock()
-    monkeypatch.setattr(session_module, "get_sessionmaker", lambda: Mock(return_value=db))
+async def test_session_scope_commits_and_closes(monkeypatch: MonkeyPatch) -> None:
+    db = AsyncMock()
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = db
+    monkeypatch.setattr(
+        session_module, "get_sessionmaker", lambda: Mock(return_value=session_context)
+    )
 
-    with session_scope() as session:
+    async with session_scope() as session:
         assert session is db
 
-    db.commit.assert_called_once_with()
-    db.rollback.assert_not_called()
-    db.close.assert_called_once_with()
+    db.commit.assert_awaited_once_with()
+    db.rollback.assert_not_awaited()
+    session_context.__aexit__.assert_awaited_once()
 
 
-def test_session_scope_rolls_back_and_closes(monkeypatch: MonkeyPatch) -> None:
-    db = Mock()
-    monkeypatch.setattr(session_module, "get_sessionmaker", lambda: Mock(return_value=db))
+async def test_session_scope_rolls_back_and_closes(monkeypatch: MonkeyPatch) -> None:
+    db = AsyncMock()
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = db
+    monkeypatch.setattr(
+        session_module, "get_sessionmaker", lambda: Mock(return_value=session_context)
+    )
 
     try:
-        with session_scope():
+        async with session_scope():
             raise RuntimeError("boom")
     except RuntimeError:
         pass
 
-    db.commit.assert_not_called()
-    db.rollback.assert_called_once_with()
-    db.close.assert_called_once_with()
+    db.commit.assert_not_awaited()
+    db.rollback.assert_awaited_once_with()
+    session_context.__aexit__.assert_awaited_once()
 
 
-def test_database_readiness_executes_lightweight_query(monkeypatch: MonkeyPatch) -> None:
-    db = Mock()
-    session_context = Mock()
-    session_context.__enter__ = Mock(return_value=db)
-    session_context.__exit__ = Mock(return_value=None)
+async def test_database_readiness_executes_lightweight_query(monkeypatch: MonkeyPatch) -> None:
+    db = AsyncMock()
+    session_context = AsyncMock()
+    session_context.__aenter__.return_value = db
     monkeypatch.setattr(
         "app.db.health.get_sessionmaker",
         lambda: Mock(return_value=session_context),
     )
 
-    check_database_ready()
+    await check_database_ready()
 
-    db.execute.assert_called_once()
+    db.execute.assert_awaited_once()

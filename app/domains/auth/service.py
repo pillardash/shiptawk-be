@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import update
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.rate_limit import RateLimitStore
@@ -132,8 +132,8 @@ def auth_token_expiry_delta(purpose: AuthTokenPurpose) -> timedelta:
             raise ValueError(f"Unsupported auth token purpose: {purpose}")
 
 
-def create_refresh_session(
-    db: Session,
+async def create_refresh_session(
+    db: AsyncSession,
     user: User,
     *,
     user_agent: str | None = None,
@@ -151,28 +151,30 @@ def create_refresh_session(
         device_name=truncate(device_name, MAX_DEVICE_NAME_LENGTH),
     )
     db.add(session)
-    db.commit()
+    await db.commit()
     return token
 
 
-def refresh_session(db: Session, refresh_token: str) -> User:
+async def refresh_session(db: AsyncSession, refresh_token: str) -> User:
     now = datetime.now(UTC)
-    user_id = db.execute(
-        update(AuthSession)
-        .where(
-            AuthSession.refresh_token_hash == hash_token(refresh_token),
-            AuthSession.revoked_at.is_(None),
-            AuthSession.expires_at > now,
-            AuthSession.deleted_at.is_(None),
+    user_id = (
+        await db.execute(
+            update(AuthSession)
+            .where(
+                AuthSession.refresh_token_hash == hash_token(refresh_token),
+                AuthSession.revoked_at.is_(None),
+                AuthSession.expires_at > now,
+                AuthSession.deleted_at.is_(None),
+            )
+            .values(last_used_at=now, revoked_at=now)
+            .returning(AuthSession.user_id)
         )
-        .values(last_used_at=now, revoked_at=now)
-        .returning(AuthSession.user_id)
     ).scalar_one_or_none()
     if user_id is None:
-        db.rollback()
+        await db.rollback()
         raise UnauthorizedError("Invalid refresh token.", code="invalid_refresh_token")
-    db.commit()
-    user = get_user_by_id(db, user_id)
+    await db.commit()
+    user = await get_user_by_id(db, user_id)
     if user is None:
         raise UnauthorizedError("Invalid refresh token.", code="invalid_refresh_token")
     if not user.is_active:
@@ -180,36 +182,40 @@ def refresh_session(db: Session, refresh_token: str) -> User:
     return user
 
 
-def revoke_refresh_session(db: Session, refresh_token: str) -> None:
-    db.execute(
+async def revoke_refresh_session(db: AsyncSession, refresh_token: str) -> None:
+    await db.execute(
         update(AuthSession)
         .where(AuthSession.refresh_token_hash == hash_token(refresh_token))
         .values(revoked_at=datetime.now(UTC))
     )
-    db.commit()
+    await db.commit()
 
 
-def revoke_user_sessions(db: Session, user: User) -> None:
-    db.execute(
+async def revoke_user_sessions(db: AsyncSession, user: User) -> None:
+    await db.execute(
         update(AuthSession)
         .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
         .values(revoked_at=datetime.now(UTC))
     )
-    db.commit()
+    await db.commit()
 
 
-def change_password(db: Session, user: User, *, current_password: str, new_password: str) -> None:
+async def change_password(
+    db: AsyncSession, user: User, *, current_password: str, new_password: str
+) -> None:
     if not verify_password(current_password, user.password_hash):
         raise UnauthorizedError("Current password is incorrect.", code="invalid_current_password")
     user.password_hash = hash_password(new_password)
-    db.commit()
-    revoke_user_sessions(db, user)
+    await db.commit()
+    await revoke_user_sessions(db, user)
 
 
-def create_auth_token(db: Session, *, email: str, purpose: AuthTokenPurpose) -> str | None:
+async def create_auth_token(
+    db: AsyncSession, *, email: str, purpose: AuthTokenPurpose
+) -> str | None:
     normalized_email = normalize_email(email)
     expires_at = datetime.now(UTC) + auth_token_expiry_delta(purpose)
-    user = get_user_by_email(db, normalized_email)
+    user = await get_user_by_email(db, normalized_email)
     if user is None:
         return None
     token = generate_token()
@@ -222,45 +228,48 @@ def create_auth_token(db: Session, *, email: str, purpose: AuthTokenPurpose) -> 
             expires_at=expires_at,
         )
     )
-    db.commit()
+    await db.commit()
     return token
 
 
-def consume_auth_token(db: Session, *, token: str, purpose: AuthTokenPurpose) -> User:
+async def consume_auth_token(db: AsyncSession, *, token: str, purpose: AuthTokenPurpose) -> User:
     now = datetime.now(UTC)
-    user_id = db.execute(
-        update(AuthToken)
-        .where(
-            AuthToken.token_hash == hash_token(token),
-            AuthToken.purpose == purpose,
-            AuthToken.used_at.is_(None),
-            AuthToken.revoked_at.is_(None),
-            AuthToken.expires_at > now,
-            AuthToken.deleted_at.is_(None),
-            AuthToken.user_id.is_not(None),
+    user_id = (
+        await db.execute(
+            update(AuthToken)
+            .where(
+                AuthToken.token_hash == hash_token(token),
+                AuthToken.purpose == purpose,
+                AuthToken.used_at.is_(None),
+                AuthToken.revoked_at.is_(None),
+                AuthToken.expires_at > now,
+                AuthToken.deleted_at.is_(None),
+                AuthToken.user_id.is_not(None),
+            )
+            .values(used_at=now)
+            .returning(AuthToken.user_id)
         )
-        .values(used_at=now)
-        .returning(AuthToken.user_id)
     ).scalar_one_or_none()
     if user_id is None:
-        db.rollback()
+        await db.rollback()
         raise UnauthorizedError("Invalid or expired token.", code="invalid_token")
-    db.commit()
-    user = get_user_by_id(db, user_id)
+    await db.commit()
+    user = await get_user_by_id(db, user_id)
     if user is None:
         raise UnauthorizedError("Invalid or expired token.", code="invalid_token")
     return user
 
 
-def reset_password(db: Session, *, token: str, new_password: str) -> None:
-    user = consume_auth_token(db, token=token, purpose=AuthTokenPurpose.password_reset)
+async def reset_password(db: AsyncSession, *, token: str, new_password: str) -> None:
+    user = await consume_auth_token(db, token=token, purpose=AuthTokenPurpose.password_reset)
     user.password_hash = hash_password(new_password)
-    db.commit()
-    revoke_user_sessions(db, user)
+    await db.commit()
+    await revoke_user_sessions(db, user)
 
 
-def verify_email(db: Session, *, token: str) -> User:
-    user = consume_auth_token(db, token=token, purpose=AuthTokenPurpose.email_verification)
+async def verify_email(db: AsyncSession, *, token: str) -> User:
+    user = await consume_auth_token(db, token=token, purpose=AuthTokenPurpose.email_verification)
     user.is_verified = True
-    db.commit()
+    await db.commit()
+    await db.refresh(user)
     return user

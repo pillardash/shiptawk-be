@@ -20,9 +20,9 @@ def health_check() -> HealthResponse:
 
 
 @router.get("/ready", response_model=ReadinessResponse)
-def readiness_check() -> ReadinessResponse:
+async def readiness_check() -> ReadinessResponse:
     try:
-        check_database_ready()
+        await check_database_ready()
     except Exception as exc:
         raise ServiceUnavailableError(
             "Database is not ready.",

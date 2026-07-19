@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
 from app.db.session import get_db
@@ -14,10 +14,10 @@ from app.shared.exceptions import UnauthorizedError
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 TokenDep = Annotated[str | None, Depends(oauth2_scheme)]
-DbDep = Annotated[Session, Depends(get_db)]
+DbDep = Annotated[AsyncSession, Depends(get_db)]
 
 
-def get_current_user(token: TokenDep, db: DbDep) -> User:
+async def get_current_user(token: TokenDep, db: DbDep) -> User:
     if token is None:
         raise UnauthorizedError(
             "Authentication credentials were not provided.",
@@ -33,7 +33,7 @@ def get_current_user(token: TokenDep, db: DbDep) -> User:
             "Invalid authentication credentials.",
             code="invalid_token",
         ) from exc
-    return get_active_user_by_id(db, user_id)
+    return await get_active_user_by_id(db, user_id)
 
 
 def get_jobs(request: Request) -> JobService:
