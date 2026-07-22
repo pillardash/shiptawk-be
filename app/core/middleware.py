@@ -4,6 +4,7 @@ from ipaddress import ip_address, ip_network
 from uuid import uuid4
 
 from fastapi import status
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -16,6 +17,24 @@ from app.core.sentry import set_sentry_request_context
 from app.shared.responses import ErrorResponse
 
 REQUEST_ID_HEADER = "X-Request-ID"
+
+
+class BrowserAuthNoStoreMiddleware:
+    def __init__(self, app: ASGIApp, *, path_prefix: str) -> None:
+        self.app = app
+        self.path_prefix = path_prefix.rstrip("/")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not scope["path"].startswith(self.path_prefix):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_no_store(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["Cache-Control"] = "no-store"
+            await send(message)
+
+        await self.app(scope, receive, send_no_store)
 
 
 def get_client_ip(request: Request, trusted_proxy_ips: list[str] | None = None) -> str:

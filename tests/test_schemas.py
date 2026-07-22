@@ -1,3 +1,4 @@
+from app.main import app
 from app.shared.pagination import PageResponse, build_page_meta
 from app.shared.responses import ErrorResponse
 from app.shared.schemas import ApiSchema, to_camel
@@ -43,3 +44,11 @@ def test_page_response_serializes_meta_as_camel_case() -> None:
             "hasPrevious": True,
         },
     }
+
+
+def test_public_openapi_does_not_expose_restricted_raw_event_payload() -> None:
+    openapi = str(app.openapi()).lower()
+
+    assert "payloadciphertext" not in openapi
+    assert "payloadkeyversion" not in openapi
+    assert "githubrawevent" not in openapi

@@ -58,3 +58,21 @@ def test_readiness_endpoint_returns_503_when_database_is_unavailable(
         "code": "database_unavailable",
         "requestId": "test-request",
     }
+
+
+def test_readiness_requires_a_configured_x_publisher_when_x_publishing_is_enabled(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    async def pass_database_check() -> None:
+        return None
+
+    monkeypatch.setattr(health_module, "check_database_ready", pass_database_check)
+    app = create_app()
+    app.state.x_publishing_enabled = True
+    app.state.publisher = None
+    client = TestClient(app)
+
+    response = client.get("/api/v1/ready")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "publisher_unavailable"

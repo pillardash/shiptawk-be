@@ -10,7 +10,8 @@
 ## Product Boundaries
 
 - Put Shiptawk domains under `app/domains/`; do not place product behavior in generic infrastructure modules.
-- Temporal workflows orchestrate durable work. Domain services own decisions and invariants.
+- Inngest is the current durable workflow authority. Backend ingestion publishes metadata-only events; Inngest functions orchestrate and domain services own decisions and invariants.
+- Temporal is deferred. Do not add a parallel Temporal execution path without an explicit Inngest replacement and cutover plan.
 - Product prompts, evidence policies, evaluations, and model-routing policy live here, not in the reusable boilerplate.
 - During migration, each use case has exactly one mutation and AI execution authority.
 - Do not enable a FastAPI write path until its live schema, ownership, idempotency, rollout, and rollback behavior are reconciled.

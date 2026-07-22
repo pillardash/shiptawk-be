@@ -1,0 +1,1 @@
+"""Weekly marketing operator domain."""

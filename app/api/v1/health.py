@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.core.config import get_settings
 from app.db.health import check_database_ready
@@ -20,7 +20,7 @@ def health_check() -> HealthResponse:
 
 
 @router.get("/ready", response_model=ReadinessResponse)
-async def readiness_check() -> ReadinessResponse:
+async def readiness_check(request: Request) -> ReadinessResponse:
     try:
         await check_database_ready()
     except Exception as exc:
@@ -28,5 +28,7 @@ async def readiness_check() -> ReadinessResponse:
             "Database is not ready.",
             code="database_unavailable",
         ) from exc
+    if request.app.state.x_publishing_enabled and request.app.state.publisher is None:
+        raise ServiceUnavailableError("X publishing is not ready.", code="publisher_unavailable")
 
     return ReadinessResponse(status="ready")

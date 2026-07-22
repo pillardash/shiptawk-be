@@ -1,7 +1,17 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,10 +24,12 @@ json_list_type = JSONB().with_variant(JSON, "sqlite")
 class Product(UuidPrimaryKeyMixin, Base):
     __tablename__ = "products"
     __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_products_workspace_id_id"),
         CheckConstraint(
             "tone_override IS NULL OR tone_override IN ('casual', 'technical', 'hype')",
             name="products_tone_override",
         ),
+        CheckConstraint("content_mode IN ('builder', 'product')", name="products_content_mode"),
         CheckConstraint(
             "content_goal IN ('', 'awareness', 'waitlist', 'trial', 'retention', "
             "'launch', 'feedback')",
@@ -47,12 +59,17 @@ class Product(UuidPrimaryKeyMixin, Base):
         json_list_type, nullable=False, default=list, server_default="[]"
     )
     website_url: Mapped[str | None] = mapped_column(Text)
+    content_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="builder", server_default="builder"
+    )
     primary_customer_pain: Mapped[str | None] = mapped_column(Text)
     desired_outcome: Mapped[str | None] = mapped_column(Text)
     positioning_statement: Mapped[str | None] = mapped_column(Text)
-    proof_points: Mapped[list[str]] = mapped_column(string_list_type, nullable=False, default=list)
+    proof_points: Mapped[list[str]] = mapped_column(
+        string_list_type, nullable=False, default=list, server_default=text("'{}'")
+    )
     customer_use_cases: Mapped[list[str]] = mapped_column(
-        string_list_type, nullable=False, default=list
+        string_list_type, nullable=False, default=list, server_default=text("'{}'")
     )
     content_goal: Mapped[str] = mapped_column(
         String(20), nullable=False, default="", server_default=""

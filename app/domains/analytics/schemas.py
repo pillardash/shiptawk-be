@@ -1,0 +1,25 @@
+from datetime import date
+
+from app.shared.schemas import ApiSchema
+
+
+class AnalyticsRate(ApiSchema):
+    count: int
+    rate: float
+
+
+class AnalyticsSummaryResponse(ApiSchema):
+    generated_draft_count: int
+    approval: AnalyticsRate
+
+
+class StatusTimelinePoint(ApiSchema):
+    date: date
+    pending: int = 0
+    approved: int = 0
+    rejected: int = 0
+    posted: int = 0
+
+
+class AnalyticsActivityResponse(ApiSchema):
+    status_timeline: list[StatusTimelinePoint]

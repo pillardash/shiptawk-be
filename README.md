@@ -44,16 +44,20 @@ Health checks:
 
 Auth endpoints:
 
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/auth/refresh`
-- `POST /api/v1/auth/logout`
 - `GET /api/v1/auth/me`
-- `POST /api/v1/auth/change-password`
-- `POST /api/v1/auth/forgot-password`
-- `POST /api/v1/auth/reset-password`
-- `POST /api/v1/auth/email-verification/request`
-- `POST /api/v1/auth/email-verification/verify`
+- `GET /api/v1/auth/browser/providers`
+- `GET /api/v1/auth/browser/oauth/{provider}/authorize`
+- `GET /api/v1/auth/browser/oauth/{provider}/callback`
+- `GET /api/v1/auth/browser/session`
+- `POST /api/v1/auth/browser/refresh`
+- `POST /api/v1/auth/browser/logout`
+- `DELETE /api/v1/auth/browser/account`
+- `POST /api/v1/workspaces/{workspaceId}/github/installation`
+- `POST /api/v1/workspaces/{workspaceId}/repositories/sync`
+- `GET /api/v1/workspaces/{workspaceId}/repositories`
+- `PATCH /api/v1/workspaces/{workspaceId}/repositories/{repositoryId}/tracking`
+- `GET /api/v1/workspaces/{workspaceId}/github/installation`
+- `POST /api/v1/webhooks/github` (public, GitHub HMAC authenticated)
 
 ## Test and Lint
 
@@ -94,6 +98,10 @@ For deployments, run migrations before starting the API process:
 
 Do not run migrations from FastAPI startup hooks. Keep schema changes as an explicit deployment step.
 
+In Coolify, configure `uv run alembic upgrade head` as the migration/pre-deploy command. Run it
+once per release before API replicas are replaced. The API container command must remain
+`./scripts/start.sh`; never run migrations in that command or once per replica.
+
 ## Deployment
 
 Build the production image:
@@ -112,7 +120,7 @@ Runtime settings:
 
 - `PORT` controls the container listening port. Default: `8000`.
 - `WORKERS` controls Uvicorn worker processes. Default: `1`.
-- `FORWARDED_ALLOW_IPS` controls trusted proxy IPs for forwarded headers.
+- `FORWARDED_ALLOW_IPS` controls trusted proxy IPs for forwarded headers. Production rejects `*`.
 - `TRUSTED_PROXY_IPS` controls which proxy IPs may supply `X-Forwarded-For` for rate limiting and throttling.
 - `ALLOWED_HOSTS` must not contain `*` in production.
 - `CORS_ORIGINS` must list explicit origins when credentials are enabled.
@@ -153,16 +161,146 @@ Health endpoints:
 
 ## Auth and Users
 
-- The boilerplate includes a reusable email/password auth foundation.
-- Passwords are hashed with Argon2 via `pwdlib`.
+- Shiptawk is OAuth-only. There are no public password registration, login, reset, or
+  change-password routes, and no password hashes or password-token tables.
 - JWT access tokens are signed with `JWT_SECRET_KEY`.
-- Registration and login return the authenticated user plus `accessToken` and `tokenType`.
-- Refresh/logout use DB-backed `auth_sessions` for revocation and session metadata.
-- Register, login, and refresh accept optional `deviceName`; `User-Agent` and IP are captured automatically.
-- Password reset and email verification use one-time hashed `auth_tokens`.
-- Login and password reset flows include cache-backed throttling. Use Redis-backed cache for distributed deployments.
-- User API responses never expose `passwordHash` or `password_hash`.
+- Browser refresh/logout use DB-backed `auth_sessions` for revocation and session metadata.
+- Session responses include the user, `currentWorkspace`, and `linkedProviders`; credentials
+  and provider tokens are never returned.
 - Set a strong `JWT_SECRET_KEY` before deploying. The default value is rejected in production.
+
+### Browser OAuth and sessions
+
+- OAuth providers implement `app.services.oauth.OAuthProvider` and are registered on the
+  application's `OAuthProviderRegistry`. No provider SDK is required. `FakeOAuthProvider` is a
+  deterministic test double and must not be registered in production.
+- Authorization uses a SHA-256 state hash at rest, a short-lived one-time transaction, and PKCE
+  S256. PKCE verifiers are authenticated-encrypted at rest with the explicit Fernet-compatible
+  `OAUTH_TRANSACTION_ENCRYPTION_KEY`; provider access/refresh tokens are not persisted. Generate
+  a key with `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+- Browser access JWTs include `sub`, `sid`, `iss`, `aud`, `iat`, `nbf`, `exp`, `jti`, and
+  `type=access`. Browser routes do not accept bearer tokens.
+- Refresh cookies contain opaque random values whose SHA-256 hashes are persisted. Rotation is
+  session-family aware; replay marks the family compromised and revokes it.
+- Unsafe browser cookie routes require an exact `Origin` from `BROWSER_ALLOWED_ORIGINS` and a
+  signed, session-bound double-submit value in the readable CSRF cookie and configured header.
+  Downstream unsafe routes should depend on the exported `CookieAuthCsrfDep` rather than copying
+  checks. `BrowserSessionDep` is available for safe cookie-authenticated reads.
+- Keep `BROWSER_COOKIE_DOMAIN` empty for host-only cookies. For sibling subdomains, set a shared
+  parent such as `.example.com`; this deliberately broadens which hosts receive the cookie.
+  Production should use secure cookies. `SameSite=None` is rejected unless secure is enabled.
+- Access and CSRF cookies use `/` so frontend JavaScript can read the CSRF value; the HttpOnly
+  refresh cookie remains restricted to browser-auth routes.
+  Names are configurable for `__Host-`/`__Secure-` conventions, but operators must choose names
+  compatible with their configured domain and path.
+- `OAuthIdentityData.email_verified` is trusted only after an adapter validates the provider
+  response. Accounts are never auto-linked by email.
+- OAuth callback state consumption commits before provider I/O. After provider validation, user,
+  identity metadata, and refresh-session creation commit atomically in one database transaction.
+- OAuth and browser-session responses use `Cache-Control: no-store`. Successful callbacks always
+  redirect to `FRONTEND_URL` plus the validated relative return path, including its query string.
+- Logout requires exact Origin and session-bound CSRF and expires all browser session cookies.
+- Account deletion is a CSRF-protected soft deletion. It revokes all sessions and OAuth identities,
+  clears browser cookies, removes directly identifying profile fields, and retains tenant content
+  and audit history for migration/compliance. A retained soft-deleted provider identity is not
+  automatically restored; restoration requires a future explicit administrative policy.
+- Protect the database and delete expired OAuth transactions regularly. Provider tokens, raw
+  OAuth state, and plaintext PKCE verifiers are never stored.
+
+### Coolify production environment
+
+For `app.shiptawk.com` and `api.shiptawk.com`, configure these exact values in Coolify in
+addition to the ordinary production database, JWT, storage, proxy, and cache settings:
+
+```dotenv
+APP_ENV=production
+FRONTEND_URL=https://app.shiptawk.com
+PUBLIC_BACKEND_URL=https://api.shiptawk.com
+ALLOWED_HOSTS=api.shiptawk.com
+CORS_ORIGINS=https://app.shiptawk.com
+BROWSER_ALLOWED_ORIGINS=https://app.shiptawk.com
+BROWSER_COOKIE_DOMAIN=.shiptawk.com
+BROWSER_COOKIE_SECURE=true
+BROWSER_COOKIE_SAMESITE=lax
+OAUTH_ENABLED_PROVIDERS=github
+OAUTH_TRANSACTION_ENCRYPTION_KEY=<fernet-key>
+GITHUB_OAUTH_CLIENT_ID=<github-oauth-app-client-id>
+GITHUB_OAUTH_CLIENT_SECRET=<github-oauth-app-client-secret>
+GITHUB_APP_ID=<github-app-id>
+GITHUB_APP_PRIVATE_KEY=<github-app-private-key-pem>
+GITHUB_WEBHOOK_ENABLED=true
+GITHUB_WEBHOOK_SECRET=<independent-high-entropy-webhook-secret>
+GITHUB_WEBHOOK_PAYLOAD_ENCRYPTION_KEY=<fernet-key>
+GITHUB_WEBHOOK_MAX_BODY_BYTES=1048576
+PROXY_HEADERS=true
+FORWARDED_ALLOW_IPS=<coolify-proxy-ip-or-private-cidr>
+TRUSTED_PROXY_IPS=<coolify-proxy-ip-or-private-cidr>
+```
+
+Restrict both proxy settings to Coolify's actual internal proxy IP or private network CIDR. Do not
+use `*`; request hosts and OAuth callback URIs are not derived from forwarded headers. The callback
+always uses `PUBLIC_BACKEND_URL`.
+
+The GitHub App is separate from GitHub login OAuth. The backend mints a short-lived app JWT and
+installation token only when calling GitHub, stores the verified installation as a workspace
+integration, and never returns installation tokens. Newly discovered repositories are untracked
+until an authenticated workspace member explicitly enables tracking.
+
+Set the GitHub OAuth callback URL to
+`https://api.shiptawk.com/api/v1/auth/browser/oauth/github/callback`. Local development keeps
+host-only insecure `Lax` cookies and uses `http://localhost:3000` by default.
+
+Set the GitHub App webhook URL to the canonical production URL
+`https://api.shiptawk.com/api/v1/webhooks/github` and configure the exact same secret in GitHub
+and `GITHUB_WEBHOOK_SECRET`. Generate the payload key independently with
+`uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+The endpoint authenticates the original bounded request bytes before parsing, stores supported
+deliveries as encrypted global ingress records, and creates pending consumers only for repositories
+that were explicitly tracked. Unsupported events are acknowledged and ignored. It does not run AI,
+provider, or publishing work inline.
+
+### Backend Inngest workflows
+
+FastAPI serves the authoritative Inngest functions at `/api/inngest`. Webhook ingestion commits the
+encrypted global event and workspace consumers before publishing one idempotent
+`github/event.received` event per consumer. Event data contains only `consumerId`, `schemaVersion`,
+and `correlationId`; raw payloads are decrypted only inside the backend workflow. The backend also
+owns onboarding events and weekly/monthly digest schedules. Functions use stable event IDs,
+database idempotency, and bounded Inngest retries. Temporal must not run in parallel.
+
+Production requires independent Inngest keys, the webhook Fernet key, and a configured generation
+provider:
+
+```dotenv
+INNGEST_ENABLED=true
+INNGEST_EVENT_KEY=<inngest-event-key>
+INNGEST_SIGNING_KEY=<inngest-signing-key>
+GENERATION_PROVIDER=openai
+OPENAI_API_KEY=<provider-key>
+```
+
+Before setting `GITHUB_WEBHOOK_ENABLED=true`, run `uv run alembic upgrade head` as Coolify's single
+pre-deploy migration command and confirm the `github_raw_events` and
+`github_raw_event_consumers` tables exist. Enable this endpoint only at the coordinated webhook
+authority cutover; do not leave the legacy Next.js webhook writing concurrently. Keep
+`./scripts/start.sh` as the API command so migrations do not race across replicas.
+
+## Initial product schema
+
+- `0001_initial_product_schema` is a predeployment-only clean baseline for the planned Supabase
+  reset. It must not be substituted for an additive migration after any backend deployment.
+- Every tenant-owned product and legacy workflow table has a non-null `workspace_id`.
+- Legacy `user_id`, `users.github_id`, and `users.github_username` remain only as temporary,
+  non-secret frontend migration fields. Authorization must use workspace membership.
+- User-level GitHub/Twitter token columns do not exist. OAuth login tokens are discarded after
+  identity retrieval. Durable integration credentials belong encrypted in
+  `integration_connections`.
+- `social_accounts` remains an isolated temporary plaintext-compatible bridge because the active
+  frontend still reads and writes it. Do not expose it through FastAPI; migrate it to encrypted
+  `integration_connections` before retiring the frontend database path.
+- The baseline already contains the restricted GitHub ingress and consumer tables required by the
+  FastAPI webhook. Apply it before enabling webhook traffic; after the first backend deployment,
+  all further schema changes must use additive Alembic revisions rather than editing the baseline.
 
 ## Infrastructure Services
 

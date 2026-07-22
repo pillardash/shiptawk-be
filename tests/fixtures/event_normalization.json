@@ -1,0 +1,19 @@
+[
+    {
+        "name": "push preserves commit selection and path order",
+        "eventName": "push",
+        "repoFullName": "acme/web",
+        "payload": {
+            "ref": "refs/heads/main",
+            "commits": [
+                {"id":"sha-1","message":"Start checkout","url":"https://github.com/acme/web/commit/sha-1","timestamp":"2026-01-01T00:00:00.000Z","author":{"name":"Ada"},"added":["src/cart.ts","src/shared.ts"],"modified":["src/shared.ts"],"removed":["src/old.ts"]},
+                {"id":"sha-2","message":"Ship checkout","url":"https://github.com/acme/web/commit/sha-2","timestamp":"2026-01-02T00:00:00.000Z","author":{"name":"Grace"},"added":["src/payments.ts"],"modified":["src/cart.ts"],"removed":[]}
+            ]
+        },
+        "expected": {"event_type":"push","repo_full_name":"acme/web","title":"Ship checkout","description":"Ship checkout","url":"https://github.com/acme/web/commit/sha-2","occurred_at":"2026-01-02T00:00:00.000Z","sha":"sha-2","branch_name":"main","touched_paths":["src/cart.ts","src/shared.ts","src/old.ts","src/payments.ts"],"dedupe_key":"push|acme/web|sha-2|2026-01-02T00:00:00.000Z|https://github.com/acme/web/commit/sha-2","push_context":{"commits":[{"sha":"sha-1","message":"Start checkout","url":"https://github.com/acme/web/commit/sha-1","timestamp":"2026-01-01T00:00:00.000Z","author":"Ada","files_changed":["src/cart.ts","src/shared.ts","src/old.ts"]},{"sha":"sha-2","message":"Ship checkout","url":"https://github.com/acme/web/commit/sha-2","timestamp":"2026-01-02T00:00:00.000Z","author":"Grace","files_changed":["src/payments.ts","src/cart.ts"]}],"all_files_changed":["src/cart.ts","src/shared.ts","src/old.ts","src/payments.ts"]}}
+    },
+    {"name":"release ignores action and preserves empty strings","eventName":"release","repoFullName":"acme/api","payload":{"action":"edited","release":{"name":"","body":"Version 2","html_url":"https://github.com/acme/api/releases/v2","published_at":"2026-02-01T10:30:00.000Z"}},"expected":{"event_type":"release","repo_full_name":"acme/api","title":"","description":"Version 2","url":"https://github.com/acme/api/releases/v2","occurred_at":"2026-02-01T10:30:00.000Z","sha":null,"branch_name":null,"touched_paths":[],"dedupe_key":"release|acme/api||2026-02-01T10:30:00.000Z|https://github.com/acme/api/releases/v2"}},
+    {"name":"closed merged pull request","eventName":"pull_request","repoFullName":"acme/mobile","payload":{"action":"closed","pull_request":{"merged":true,"title":"Ship onboarding","body":"Adds the first-run flow","html_url":"https://github.com/acme/mobile/pull/42","merged_at":"2026-03-01T12:00:00.000Z","base":{"ref":"production"}}},"expected":{"event_type":"pull_request_merged","repo_full_name":"acme/mobile","title":"Ship onboarding","description":"Adds the first-run flow","url":"https://github.com/acme/mobile/pull/42","occurred_at":"2026-03-01T12:00:00.000Z","sha":null,"branch_name":"production","touched_paths":[],"dedupe_key":"pull_request_merged|acme/mobile||2026-03-01T12:00:00.000Z|https://github.com/acme/mobile/pull/42"}},
+    {"name":"closed unmerged pull request is ignored","eventName":"pull_request","repoFullName":"acme/mobile","payload":{"action":"closed","pull_request":{"merged":false}},"expected":null},
+    {"name":"unsupported event is ignored","eventName":"issues","repoFullName":"acme/web","payload":{"action":"opened"},"expected":null}
+]

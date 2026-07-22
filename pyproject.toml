@@ -8,7 +8,7 @@ dependencies = [
     "alembic>=1.18.4",
     "boto3>=1.41.5",
     "fastapi[standard]>=0.136.3",
-    "pwdlib[argon2]>=0.3.0",
+    "httpx>=0.28.1",
     "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.14.1",
     "python-dotenv>=1.2.2",
@@ -17,6 +17,8 @@ dependencies = [
     "rq>=2.6.1",
     "sentry-sdk[fastapi]>=2.47.0",
     "sqlalchemy>=2.0.50",
+    "cryptography>=44.0.0",
+    "inngest>=0.5.16",
 ]
 
 [tool.ruff]
@@ -49,6 +51,11 @@ check_untyped_defs = true
 [tool.coverage.run]
 source = ["app"]
 branch = true
+omit = [
+    "app/domains/legacy/models.py",
+    "app/domains/integrations/models.py",
+    "*/app/domains/operator/migration.py",
+]
 
 [tool.coverage.report]
 show_missing = true

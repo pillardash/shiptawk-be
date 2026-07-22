@@ -9,5 +9,9 @@ The source revision includes the reusable async SQLAlchemy conversion, PostgreSQ
 coverage enforcement, and associated documentation. Shiptawk product changes are kept
 as a separate working-tree delta from that committed baseline.
 
+The generic browser OAuth/session delta was applied selectively on 2026-07-19 while still
+uncommitted in this product repository. Product-specific GitHub registration, OAuth-only policy,
+workspace provisioning, and schema decisions remain Shiptawk-owned changes.
+
 Future reusable changes should normally be implemented and verified in the boilerplate
 first, then applied deliberately here. Product-specific changes must not be copied back.

@@ -84,6 +84,8 @@ def test_rate_limit_trusts_forwarded_for_from_trusted_proxy(monkeypatch: MonkeyP
 
 def test_openapi_docs_are_disabled_in_production_by_default(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("PUBLIC_BACKEND_URL", "https://api.example.com")
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.setenv("ALLOWED_HOSTS", "testserver")
     monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
     monkeypatch.setenv("JWT_SECRET_KEY", "changed")
@@ -97,6 +99,8 @@ def test_openapi_docs_are_disabled_in_production_by_default(monkeypatch: MonkeyP
 
 def test_production_masks_server_http_exception_details(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("PUBLIC_BACKEND_URL", "https://api.example.com")
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     monkeypatch.setenv("ALLOWED_HOSTS", "testserver")
     monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
     monkeypatch.setenv("JWT_SECRET_KEY", "changed")

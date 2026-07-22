@@ -9,6 +9,10 @@ from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
 from app.domains.auth import models as auth_models  # noqa: F401
+from app.domains.evidence import models as evidence_models  # noqa: F401
+from app.domains.integrations import models as integration_models  # noqa: F401
+from app.domains.legacy import models as legacy_models  # noqa: F401
+from app.domains.operator import models as operator_models  # noqa: F401
 from app.domains.products import models as product_models  # noqa: F401
 from app.domains.users import models as user_models  # noqa: F401
 from app.domains.workspaces import models as workspace_models  # noqa: F401
@@ -30,6 +34,7 @@ def run_migrations_offline() -> None:
         url=get_url(),
         target_metadata=target_metadata,
         compare_type=True,
+        compare_server_default=True,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -39,7 +44,12 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+    )
 
     with context.begin_transaction():
         context.run_migrations()

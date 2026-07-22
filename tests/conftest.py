@@ -11,6 +11,11 @@ from app.db.session import reset_database_state
 def clear_settings_cache(monkeypatch: MonkeyPatch) -> Generator[None, None, None]:
     monkeypatch.setenv("APP_NAME", "Backend API")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://postgres:postgres@localhost:5432/app")
+    monkeypatch.setenv(
+        "OAUTH_TRANSACTION_ENCRYPTION_KEY",
+        "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+    )
+    monkeypatch.setenv("GITHUB_WEBHOOK_ENABLED", "false")
     reset_database_state()
     get_settings.cache_clear()
     yield
