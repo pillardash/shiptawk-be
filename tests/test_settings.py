@@ -31,6 +31,29 @@ def test_settings_use_unprefixed_env_names(monkeypatch: MonkeyPatch) -> None:
     assert settings.database_url == "postgresql+psycopg://postgres:postgres@localhost:5432/test"
 
 
+def test_settings_ignore_empty_optional_environment_values(monkeypatch: MonkeyPatch) -> None:
+    for name in (
+        "TRUSTED_PROXY_IPS",
+        "GITHUB_APP_ID",
+        "BROWSER_COOKIE_DOMAIN",
+        "OPENAPI_ENABLED",
+        "EMAIL_PROVIDER",
+        "EMAIL_FROM",
+        "STORAGE_PUBLIC_BASE_URL",
+    ):
+        monkeypatch.setenv(name, "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.trusted_proxy_ips == []
+    assert settings.github_app_id is None
+    assert settings.browser_cookie_domain is None
+    assert settings.openapi_enabled is None
+    assert settings.email_provider is None
+    assert settings.email_from is None
+    assert settings.storage_public_base_url is None
+
+
 def test_log_level_accepts_lowercase_value() -> None:
     settings = Settings(log_level="debug")
 

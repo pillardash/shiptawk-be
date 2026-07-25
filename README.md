@@ -27,7 +27,7 @@ Use an async SQLAlchemy URL such as
 ## Run
 
 ```bash
-uv run fastapi dev app/main.py
+uv run uvicorn app.main:app --reload
 ```
 
 Run with Docker Compose:

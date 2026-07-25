@@ -1,6 +1,6 @@
 """Scope onboarding completion to workspaces.
 
-Revision ID: 0004_workspace_onboarding_completion
+Revision ID: 0004_workspace_onboarding
 Revises: 0003_generation_use_cases
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0004_workspace_onboarding_completion"
+revision: str = "0004_workspace_onboarding"
 down_revision: str | None = "0003_generation_use_cases"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
