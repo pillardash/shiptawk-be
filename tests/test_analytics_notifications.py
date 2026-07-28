@@ -12,16 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.analytics import router as analytics_router
-from app.domains.analytics.repository import get_activity, get_summary
-from app.domains.analytics.schemas import AnalyticsRate, StatusTimelinePoint
-from app.domains.legacy.models import draft_status_events, drafts, repos
-from app.domains.notifications import router as notifications_router
-from app.domains.notifications.repository import disable_email_notifications, unread_count
-from app.domains.notifications.schemas import NotificationPreferencesUpdate
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership
 from app.main import create_app
+from app.modules.analytics.api import router as analytics_router
+from app.modules.analytics.repositories.analytics import get_activity, get_summary
+from app.modules.analytics.schemas import AnalyticsRate, StatusTimelinePoint
+from app.modules.drafts.models import draft_status_events, drafts
+from app.modules.identity.models.users import User
+from app.modules.notifications.api import router as notifications_router
+from app.modules.notifications.repositories.notifications import (
+    disable_email_notifications,
+    unread_count,
+)
+from app.modules.notifications.schemas import NotificationPreferencesUpdate
+from app.modules.notifications.services.preferences import unsubscribe_user
+from app.modules.repos.models import repos
+from app.modules.workspaces.models import Workspace, WorkspaceMembership
 from app.shared.exceptions import NotFoundError, ServiceUnavailableError
 
 
@@ -324,7 +329,11 @@ async def test_notification_repository_branches() -> None:
     db.get.return_value = user
     assert await disable_email_notifications(db, user_id) is True
     assert user.email_notifications_enabled is False
-    db.commit.assert_awaited()
+    db.commit.assert_not_awaited()
+
+    user.email_notifications_enabled = True
+    assert await unsubscribe_user(db, user_id) is True
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -401,7 +410,7 @@ async def test_notification_router_controlled_failure_branches(
     async def missing_user(*args: object) -> bool:
         return False
 
-    monkeypatch.setattr(notifications_router, "disable_email_notifications", missing_user)
+    monkeypatch.setattr(notifications_router, "unsubscribe_user", missing_user)
     response = await notifications_router.unsubscribe("token", db)
     assert response.status_code == 400
 

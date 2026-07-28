@@ -1,5 +1,5 @@
-from app.domains.generation.evidence import (
-    CandidateEvidenceValidator,
+from app.modules.drafts.policies.evidence import CandidateEvidenceValidator
+from app.modules.drafts.schemas.evidence import (
     EvidenceValidationResult,
     GeneratedVariant,
     PublicSafeSummary,

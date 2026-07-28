@@ -10,22 +10,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.achievement_digests.repository import (
+from app.main import create_app
+from app.modules.achievement_digests.enums import AchievementDigestFrequency
+from app.modules.achievement_digests.models import achievement_digest_feedback, achievement_digests
+from app.modules.achievement_digests.policies.schedule import digest_period
+from app.modules.achievement_digests.providers.email import EmailServiceAchievementDigestSender
+from app.modules.achievement_digests.repositories.digests import (
     DigestScheduleTarget,
     list_digest_schedule_targets,
 )
-from app.domains.achievement_digests.schemas import AchievementDigestFrequency
-from app.domains.achievement_digests.sender import EmailServiceAchievementDigestSender
-from app.domains.achievement_digests.service import (
+from app.modules.achievement_digests.services.delivery import (
     AchievementDigestDelivery,
     deliver_stored_digest,
-    digest_period,
     signed_unsubscribe_url,
 )
-from app.domains.legacy.models import achievement_digest_feedback, achievement_digests, repos
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership
-from app.main import create_app
+from app.modules.identity.models.users import User
+from app.modules.repos.models import repos
+from app.modules.workspaces.models import Workspace, WorkspaceMembership
 from app.services.email.base import EmailMessage
 from app.workflows.digests import AchievementDigestWorkflow
 

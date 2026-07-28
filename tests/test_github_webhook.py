@@ -18,10 +18,11 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.legacy.models import github_raw_event_consumers, github_raw_events, repos
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace
 from app.main import create_app
+from app.modules.identity.models.users import User
+from app.modules.integrations.models import github_raw_event_consumers, github_raw_events
+from app.modules.repos.models import repos
+from app.modules.workspaces.models import Workspace
 from app.services.github_webhook import decrypt_github_webhook_payload
 from app.workflows.publisher import MetadataEvent
 

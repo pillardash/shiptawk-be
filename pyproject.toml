@@ -36,6 +36,7 @@ select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+markers = ["evaluation: deterministic AI release corpora"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -52,9 +53,9 @@ check_untyped_defs = true
 source = ["app"]
 branch = true
 omit = [
-    "app/domains/legacy/models.py",
-    "app/domains/integrations/models.py",
-    "*/app/domains/operator/migration.py",
+    "app/modules/repos/models.py",
+    "app/modules/integrations/models.py",
+    "*/app/modules/operator/migration.py",
 ]
 
 [tool.coverage.report]

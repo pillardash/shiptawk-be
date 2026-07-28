@@ -1,15 +1,15 @@
-from app.domains.generation.context import (
+from app.modules.drafts.policies.scoring import CandidateScoringEngine
+from app.modules.drafts.schemas.context import (
     EffectiveGenerationContext,
-    GenerationContextBuilder,
     ProductContextInput,
-    RepositoryContextInput,
     SafetySettingsInput,
     UserContextInput,
     VoiceProfileInput,
 )
-from app.domains.generation.scoring import CandidateScoringEngine
-from app.domains.generation.summary import CommitEnrichment
-from app.domains.integrations.event_normalizer import NormalizedEvent
+from app.modules.drafts.schemas.summary import CommitEnrichment
+from app.modules.drafts.services.generation_context_service import GenerationContextBuilder
+from app.modules.integrations.events import NormalizedEvent
+from app.modules.repos.schemas.generation_context_schema import RepositoryContextInput
 
 
 def context(

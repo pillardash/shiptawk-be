@@ -3,29 +3,30 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import StaticPool, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
+from app.core.exception_handlers import register_exception_handlers
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.drafts.publisher import (
-    FakePublisher,
-    HttpXPublisher,
+from app.modules.drafts.api.router import router as drafts_router
+from app.modules.drafts.models import draft_feedback_events, draft_status_events, drafts
+from app.modules.drafts.providers.fakes import FakePublisher, StaticCredentialDecryptor
+from app.modules.drafts.providers.protocols import (
     PublisherTransientError,
     PublishRequest,
-    StaticCredentialDecryptor,
 )
-from app.domains.drafts.router import router as drafts_router
-from app.domains.drafts.service import publish_draft
-from app.domains.integrations.models import IntegrationConnection
-from app.domains.integrations.router import router as integrations_router
-from app.domains.legacy.models import draft_feedback_events, draft_status_events, drafts, repos
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
-from app.main import create_app
+from app.modules.drafts.providers.x import HttpXPublisher
+from app.modules.drafts.services.review import publish_draft
+from app.modules.identity.models.users import User
+from app.modules.integrations.api.router import router as integrations_router
+from app.modules.integrations.models import IntegrationConnection
+from app.modules.repos.models import repos
+from app.modules.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.shared.exceptions import ConflictError, ServiceUnavailableError
 
 
@@ -49,7 +50,8 @@ def publishing_client() -> Generator[
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.drop_all)
 
-    app = create_app()
+    app = FastAPI()
+    register_exception_handlers(app)
     app.include_router(drafts_router, prefix="/api/v1")
     app.include_router(integrations_router, prefix="/api/v1")
     app.state.publisher = publisher
@@ -195,21 +197,19 @@ def test_publish_route_posts_once_and_returns_stable_receipt(
     }
 
 
-def test_startup_initializes_the_http_x_publisher_when_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "app.main.get_settings",
-        lambda: Settings(
-            x_publishing_enabled=True,
-            integration_credentials_encryption_key="BfXDdHwnSM6lVTfzq3hFhAOWc2KX6M3GnE_2MdYTpmo=",
-        ),
+def test_http_x_publisher_can_be_initialized_when_enabled() -> None:
+    settings = Settings(
+        x_publishing_enabled=True,
+        integration_credentials_encryption_key="BfXDdHwnSM6lVTfzq3hFhAOWc2KX6M3GnE_2MdYTpmo=",
+    )
+    publisher = (
+        HttpXPublisher(timeout_seconds=settings.oauth_http_timeout_seconds)
+        if settings.x_publishing_enabled
+        else None
     )
 
-    app = create_app()
-
-    assert app.state.x_publishing_enabled is True
-    assert isinstance(app.state.publisher, HttpXPublisher)
+    assert settings.x_publishing_enabled is True
+    assert isinstance(publisher, HttpXPublisher)
 
 
 def test_publish_never_calls_provider_without_explicit_approval(

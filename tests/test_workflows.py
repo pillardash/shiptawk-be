@@ -16,25 +16,27 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
-from app.domains.generation.fake_provider import DeterministicGenerationProvider
-from app.domains.generation.models import GenerationTelemetry, ProviderGenerationResult
-from app.domains.integrations.event_normalizer import NormalizedEvent
-from app.domains.legacy.models import (
-    drafts,
+from app.main import create_app
+from app.modules.drafts.models import drafts
+from app.modules.drafts.services.event_to_draft_service import EventToDraftService
+from app.modules.identity.models.users import User
+from app.modules.integrations.events import NormalizedEvent
+from app.modules.integrations.models import (
     github_raw_event_consumers,
     normalized_events,
-    product_repositories,
-    repos,
 )
-from app.domains.products.models import Product
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace
-from app.main import create_app
+from app.modules.products.models import Product, product_repositories
+from app.modules.repos.models import repos
+from app.modules.workspaces.models import Workspace
 from app.services.github_webhook import (
     GitHubWebhookEnvelope,
     ingest_github_webhook,
 )
-from app.workflows.contracts import GitHubEventMetadata, OnboardingEventMetadata
+from app.workflows.contracts import (
+    GitHubEventMetadata,
+    OnboardingEventMetadata,
+    SearchSyncEventMetadata,
+)
 from app.workflows.generation import DatabaseGenerationWorkflow
 from app.workflows.github import GitHubConsumerWorkflow, GitHubWorkflowContext
 from app.workflows.publisher import MetadataEvent, publish_pending_consumers
@@ -44,6 +46,7 @@ from app.workflows.runtime import (
     serve_workflow_functions,
 )
 from app.workflows.unavailable import UnavailableGitHubConsumerWorkflow
+from tests.test_generation_orchestration import central_llm
 
 
 @pytest.fixture
@@ -228,32 +231,21 @@ async def test_database_generation_workflow_builds_product_context_and_persists_
         )
         await db.commit()
 
-    provider = DeterministicGenerationProvider(
-        result=ProviderGenerationResult(
-            output={
-                "candidates": [
-                    {
-                        "content": (
-                            "Product teams can turn shipped changes into reviewed marketing."
-                        ),
-                        "variant": "customer_value",
-                        "angle": "user_benefit",
-                        "rationale": "Connects a release to a customer outcome.",
-                        "evidenceIds": ["event.change.1"],
-                    }
-                ]
-            },
-            telemetry=GenerationTelemetry(
-                provider="deterministic",
-                model="fake-v1",
-                latency_ms=1,
-                correlation_id="workflow-generation",
-            ),
-        )
+    llm, provider = central_llm(
+        workflow_db,
+        {
+            "candidates": [
+                {
+                    "content": "Product teams can turn shipped changes into reviewed marketing.",
+                    "variant": "customer_value",
+                    "angle": "user_benefit",
+                    "rationale": "Connects a release to a customer outcome.",
+                    "evidenceIds": ["event.change.1"],
+                }
+            ]
+        },
     )
-    generation = DatabaseGenerationWorkflow(
-        sessions=workflow_db, provider=provider, model="fake-v1"
-    )
+    generation = DatabaseGenerationWorkflow(EventToDraftService(sessions=workflow_db, llm=llm))
     context = GitHubWorkflowContext(
         consumer_id=consumer_id,
         raw_event_id=uuid4(),
@@ -288,7 +280,7 @@ async def test_database_generation_workflow_builds_product_context_and_persists_
     assert draft["content"] == "Product teams can turn shipped changes into reviewed marketing."
     assert draft["status"] == "pending"
     assert draft["source_event_payload"]["selectedAngle"] == "user_benefit"
-    assert provider.call_count == 1
+    assert len(provider.requests) == 1
 
 
 @dataclass
@@ -353,6 +345,68 @@ def test_workflow_contracts_reject_payloads_and_require_stable_metadata() -> Non
         OnboardingEventMetadata.model_validate(
             {"userId": uuid4(), "workspaceId": uuid4(), "schemaVersion": 2}
         )
+    run_id = uuid4()
+    assert (
+        SearchSyncEventMetadata.model_validate(
+            {
+                "runId": run_id,
+                "workspaceId": uuid4(),
+                "productId": uuid4(),
+                "sourceId": uuid4(),
+                "schemaVersion": 1,
+                "correlationId": run_id,
+            }
+        ).run_id
+        == run_id
+    )
+    with pytest.raises(ValidationError):
+        SearchSyncEventMetadata.model_validate(
+            {
+                "runId": run_id,
+                "workspaceId": uuid4(),
+                "productId": uuid4(),
+                "sourceId": uuid4(),
+                "schemaVersion": 1,
+                "correlationId": run_id,
+                "query": "private query",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_search_sync_workflow_validates_correlation_and_passes_only_run_id() -> None:
+    @dataclass
+    class FakeSearchSync:
+        calls: list[UUID] = field(default_factory=list)
+
+        async def process(self, run_id: UUID) -> dict[str, object]:
+            self.calls.append(run_id)
+            return {"status": "succeeded"}
+
+    search = FakeSearchSync()
+    functions = create_workflow_functions(
+        client=inngest.Inngest(app_id="search-sync-workflow-test"),
+        github=UnavailableGitHubConsumerWorkflow(),
+        onboarding=DeferredOnboardingWorkflow(),
+        digests=None,
+        search_syncs=search,
+    ).functions
+    run_id = uuid4()
+    context = MagicMock()
+    context.event.data = {
+        "runId": str(run_id),
+        "workspaceId": str(uuid4()),
+        "productId": str(uuid4()),
+        "sourceId": str(uuid4()),
+        "schemaVersion": 1,
+        "correlationId": str(run_id),
+    }
+
+    assert await cast(Any, functions[9])._handler(context) == {"status": "succeeded"}
+    assert search.calls == [run_id]
+    context.event.data["correlationId"] = str(uuid4())
+    with pytest.raises(ValueError, match="correlation metadata"):
+        await cast(Any, functions[9])._handler(context)
 
 
 @pytest.mark.asyncio
@@ -386,7 +440,7 @@ def test_fastapi_serves_all_backend_owned_inngest_functions() -> None:
         response = client.get("/api/inngest")
 
     assert response.status_code == 200
-    assert response.json()["function_count"] == 7
+    assert response.json()["function_count"] == 16
     assert response.json()["mode"] == "dev"
 
 
@@ -421,7 +475,7 @@ async def test_digest_schedules_use_deterministic_backend_workflows() -> None:
     ).functions
     context = MagicMock()
 
-    results = [await cast(Any, function)._handler(context) for function in functions[2:]]
+    results = [await cast(Any, function)._handler(context) for function in functions[3:9]]
 
     assert results == [
         {"sent": 3, "skipped": 4},
@@ -429,6 +483,7 @@ async def test_digest_schedules_use_deterministic_backend_workflows() -> None:
         {"sent": 1, "skipped": 2},
         {"sent": 1, "skipped": 2},
         {"sent": 1, "skipped": 2},
+        {"claimed": 0, "published": 0, "retried": 0, "failed": 0},
     ]
     assert drafts.calls == 1
     assert achievement.calls == ["weekly", "monthly"]
@@ -479,12 +534,28 @@ async def test_workflow_handlers_validate_metadata_and_skip_unconfigured_digest_
 
     assert await cast(Any, functions[0])._handler(github_context) == {"status": "processed"}
     assert await cast(Any, functions[1])._handler(onboarding_context) == {"status": "generated"}
-    assert [await cast(Any, function)._handler(MagicMock()) for function in functions[2:]] == [
+    website_context = MagicMock()
+    run_id = uuid4()
+    website_context.event.data = {
+        "runId": str(run_id),
+        "workspaceId": str(workspace_id),
+        "productId": str(uuid4()),
+        "sourceId": str(uuid4()),
+        "schemaVersion": 1,
+        "correlationId": str(run_id),
+    }
+    assert await cast(Any, functions[2])._handler(website_context) == {
+        "status": "skipped",
+        "reason": "website crawl workflow is not configured",
+        "runId": str(run_id),
+    }
+    assert [await cast(Any, function)._handler(MagicMock()) for function in functions[3:9]] == [
         {"sent": 0, "skipped": 0},
         {"sent": 0, "skipped": 0},
         {"sent": 0, "skipped": 0},
         {"sent": 0, "skipped": 0},
         {"sent": 0, "skipped": 0},
+        {"claimed": 0, "published": 0, "retried": 0, "failed": 0},
     ]
     assert github.calls == [consumer_id]
     assert onboarding.calls == [(user_id, workspace_id)]
@@ -507,6 +578,39 @@ async def test_deferred_onboarding_includes_only_stable_metadata() -> None:
         "userId": str(user_id),
         "workspaceId": str(workspace_id),
     }
+
+
+@pytest.mark.asyncio
+async def test_website_crawl_workflow_dispatches_only_the_run_id() -> None:
+    @dataclass
+    class FakeWebsiteCrawlWorkflow:
+        calls: list[UUID] = field(default_factory=list)
+
+        async def process(self, run_id: UUID) -> dict[str, object]:
+            self.calls.append(run_id)
+            return {"status": "succeeded"}
+
+    website = FakeWebsiteCrawlWorkflow()
+    functions = create_workflow_functions(
+        client=inngest.Inngest(app_id="website-workflow-test"),
+        github=UnavailableGitHubConsumerWorkflow(),
+        onboarding=DeferredOnboardingWorkflow(),
+        digests=None,
+        website_crawls=website,
+    ).functions
+    run_id = uuid4()
+    context = MagicMock()
+    context.event.data = {
+        "runId": str(run_id),
+        "workspaceId": str(uuid4()),
+        "productId": str(uuid4()),
+        "sourceId": str(uuid4()),
+        "schemaVersion": 1,
+        "correlationId": str(run_id),
+    }
+
+    assert await cast(Any, functions[2])._handler(context) == {"status": "succeeded"}
+    assert website.calls == [run_id]
 
 
 def test_serve_workflow_functions_registers_the_inngest_route() -> None:

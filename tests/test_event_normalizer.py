@@ -3,10 +3,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.domains.integrations.event_normalizer import (
-    EventNormalizer,
-    should_process_tracked_branch,
-)
+from app.modules.integrations.events import EventNormalizer
+from app.modules.integrations.policies.branches import should_process_tracked_branch
 
 
 def load_fixtures() -> list[dict[str, Any]]:

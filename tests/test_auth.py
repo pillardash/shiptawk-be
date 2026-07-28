@@ -11,10 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.security import create_access_token, decode_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.auth.models import AuthSession, OAuthIdentity
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.main import create_app
+from app.modules.identity.models.oauth import AuthSession, OAuthIdentity
+from app.modules.identity.models.users import User
+from app.modules.workspaces.enums import WorkspaceRole
+from app.modules.workspaces.models import Workspace, WorkspaceMembership
 from app.services.oauth import FakeOAuthProvider, OAuthIdentityData, OAuthProviderRegistry
 
 
@@ -190,7 +191,8 @@ def test_oauth_callback_rolls_back_all_provisioning_when_session_creation_fails(
         raise RuntimeError("session storage failed")
 
     monkeypatch.setattr(
-        "app.domains.auth.browser_service.create_refresh_session_record", fail_session_creation
+        "app.modules.identity.services.browser_oauth.create_refresh_session_record",
+        fail_session_creation,
     )
     authorize = client.get("/api/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
     state = authorize.headers["location"].split("state=")[1].split("&")[0]

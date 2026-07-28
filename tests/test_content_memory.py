@@ -1,12 +1,11 @@
-from app.domains.generation.content_memory import (
-    ContentMemory,
-    DraftMemoryInput,
+from app.modules.drafts.detectors.repetition_detector import (
     build_content_memory,
     detect_repetition,
     normalize_content,
     similarity_score,
     token_overlap,
 )
+from app.modules.drafts.schemas.memory import ContentMemory, DraftMemoryInput
 
 
 def test_normalizes_and_scores_with_legacy_overlap_coefficient() -> None:

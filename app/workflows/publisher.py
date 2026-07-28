@@ -7,7 +7,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domains.legacy.models import github_raw_event_consumers
+from app.modules.integrations.models import github_raw_event_consumers
 
 
 @dataclass(frozen=True, slots=True)

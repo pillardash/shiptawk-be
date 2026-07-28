@@ -86,11 +86,18 @@ class GitHubOAuthProvider:
         client_secret: str,
         timeout_seconds: float = 10.0,
         http_transport: httpx.AsyncBaseTransport | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
+        if http_transport is not None and http_client is not None:
+            raise ValueError("Provide either http_transport or http_client, not both.")
         self.client_id = client_id
         self.client_secret = client_secret
         self.timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 5.0))
-        self.http_transport = http_transport
+        self._http_client = http_client or httpx.AsyncClient(transport=http_transport)
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        return self._http_client
 
     def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str:
         return (
@@ -112,32 +119,32 @@ class GitHubOAuthProvider:
         self, *, code: str, code_verifier: str, redirect_uri: str
     ) -> OAuthIdentityData:
         try:
-            async with httpx.AsyncClient(
+            common_headers = {"Accept": "application/json", "User-Agent": "Shiptawk"}
+            token_response = await self._http_client.post(
+                self.token_endpoint,
                 timeout=self.timeout,
-                transport=self.http_transport,
-                headers={"Accept": "application/json", "User-Agent": "Shiptawk"},
-            ) as client:
-                token_response = await client.post(
-                    self.token_endpoint,
-                    data={
-                        "client_id": self.client_id,
-                        "client_secret": self.client_secret,
-                        "code": code,
-                        "redirect_uri": redirect_uri,
-                        "code_verifier": code_verifier,
-                    },
-                )
-                token_response.raise_for_status()
-                access_token = token_response.json().get("access_token")
-                if not isinstance(access_token, str) or not access_token:
-                    raise OAuthProviderError("GitHub rejected the authorization code.")
-                headers = {"Authorization": f"Bearer {access_token}"}
-                profile_response = await client.get(f"{self.api_base_url}/user", headers=headers)
-                emails_response = await client.get(
-                    f"{self.api_base_url}/user/emails", headers=headers
-                )
-                profile_response.raise_for_status()
-                emails_response.raise_for_status()
+                headers=common_headers,
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "code_verifier": code_verifier,
+                },
+            )
+            token_response.raise_for_status()
+            access_token = token_response.json().get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                raise OAuthProviderError("GitHub rejected the authorization code.")
+            headers = {**common_headers, "Authorization": f"Bearer {access_token}"}
+            profile_response = await self._http_client.get(
+                f"{self.api_base_url}/user", timeout=self.timeout, headers=headers
+            )
+            emails_response = await self._http_client.get(
+                f"{self.api_base_url}/user/emails", timeout=self.timeout, headers=headers
+            )
+            profile_response.raise_for_status()
+            emails_response.raise_for_status()
         except OAuthProviderError:
             raise
         except (httpx.HTTPError, ValueError, TypeError) as exc:

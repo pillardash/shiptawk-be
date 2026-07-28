@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "opportunity-engine-eval.v1",
+  "contractVersions": {
+    "detectionInput": "1",
+    "detectorSuite": "v1",
+    "qualityPolicy": "v1",
+    "scoringPolicy": "v1",
+    "cooldownPolicy": "v1"
+  },
+  "input": {
+    "schema_version": "1",
+    "workspace_id": "10000000-0000-0000-0000-000000000001",
+    "product_id": "20000000-0000-0000-0000-000000000001",
+    "as_of": "2026-07-27T12:00:00Z",
+    "profile": {
+      "product_name": "Example Product",
+      "profile_id": "30000000-0000-0000-0000-000000000001",
+      "profile_version": 1,
+      "schema_version": "1",
+      "status": "approved",
+      "completeness": "100",
+      "objective": "Help teams improve public marketing pages.",
+      "audience": "Software teams",
+      "conversion_action": "Start a trial",
+      "positioning": "Evidence-backed marketing operations",
+      "capabilities": [{"capability_key": "reports", "name": "Reports", "active": true}]
+    },
+    "search": {
+      "source_id": "40000000-0000-0000-0000-000000000001",
+      "sync_id": "40000000-0000-0000-0000-000000000002",
+      "health_status": "healthy",
+      "baseline_status": "ready",
+      "current_start": "2026-06-29",
+      "current_end": "2026-07-26",
+      "prior_start": "2026-06-01",
+      "prior_end": "2026-06-28",
+      "missing_dates": [],
+      "complete": true,
+      "truncated": false,
+      "warnings": [],
+      "queries": [
+        {"query_fingerprint":"q-ctr","query_text":"example snippets","current":{"clicks":1,"impressions":200,"ctr":"0.005","average_position":"5"},"prior":{"clicks":1,"impressions":200,"ctr":"0.005","average_position":"5"},"page_fingerprints":["page-main"],"matched_page_fingerprint":"page-main","page_match_status":"matched","profile_relevance":"0.9","branded":false,"navigational":false},
+        {"query_fingerprint":"q-rank","query_text":"example reporting","current":{"clicks":8,"impressions":200,"ctr":"0.04","average_position":"15"},"prior":{"clicks":8,"impressions":200,"ctr":"0.04","average_position":"15"},"page_fingerprints":["page-main"],"matched_page_fingerprint":"page-main","page_match_status":"matched","profile_relevance":"0.9","branded":false,"navigational":false},
+        {"query_fingerprint":"q-decline","query_text":"example analytics","current":{"clicks":10,"impressions":150,"ctr":"0.0667","average_position":"25"},"prior":{"clicks":30,"impressions":300,"ctr":"0.1","average_position":"5"},"page_fingerprints":["page-decline"],"matched_page_fingerprint":"page-decline","page_match_status":"matched","profile_relevance":"0.9","branded":false,"navigational":false},
+        {"query_fingerprint":"q-demand","query_text":"example marketing reports","current":{"clicks":2,"impressions":60,"ctr":"0.0333","average_position":"30"},"prior":{"clicks":2,"impressions":60,"ctr":"0.0333","average_position":"30"},"page_fingerprints":[],"matched_page_fingerprint":null,"page_match_status":"unmatched","profile_relevance":"0.9","branded":false,"navigational":false}
+      ],
+      "pages": [{"url_fingerprint":"url-quality","url":"https://example.invalid/quality","website_page_fingerprint":"page-quality","match_status":"matched","current":{"clicks":5,"impressions":100,"ctr":"0.05","average_position":"12"},"prior":{"clicks":5,"impressions":100,"ctr":"0.05","average_position":"12"}}]
+    },
+    "queries": [],
+    "pages": [],
+    "website": {
+      "source_id": "50000000-0000-0000-0000-000000000001",
+      "crawl_id": "50000000-0000-0000-0000-000000000002",
+      "profile_version": 1,
+      "status": "succeeded",
+      "health_status": "healthy",
+      "completed_at": "2026-07-27T10:00:00Z",
+      "complete": true,
+      "warnings": [],
+      "pages": [
+        {"page_fingerprint":"page-main","url":"https://example.invalid/main","title":"Main","meta_description":"Main page","headings":["Main"],"h1s":["Main"],"indexable":true,"crawl_status":"succeeded"},
+        {"page_fingerprint":"page-decline","url":"https://example.invalid/analytics","title":"Analytics","meta_description":"Analytics page","headings":["Analytics"],"h1s":["Analytics"],"indexable":true,"crawl_status":"succeeded"},
+        {"page_fingerprint":"page-quality","url":"https://example.invalid/quality","title":null,"meta_description":null,"headings":[],"h1s":[],"indexable":true,"crawl_status":"succeeded"}
+      ],
+      "capability_mappings": []
+    },
+    "shipping": {"window_start":"2026-06-27T12:00:00Z","window_end":"2026-07-27T12:00:00Z","events":[{"event_id":"60000000-0000-0000-0000-000000000001","event_key":"release-reports","repository_id":"60000000-0000-0000-0000-000000000002","mapping_id":"60000000-0000-0000-0000-000000000003","event_type":"release","occurred_at":"2026-07-20T12:00:00Z","safe_summary":"Reporting improvements shipped","user_benefit":"Faster reports","evaluation_outcome":"generate","public_worthiness_score":"90","capability_key":"reports","capability_coverage_score":"1","capability_relevance_score":"1"}]},
+    "history": {"opportunities": []}
+  },
+  "minimumCases": {"positiveDetectors": 6, "belowThreshold": 6, "cooldownDuplicates": 6, "insufficientEvidence": 6},
+  "reviewedNearDuplicatePairs": [
+    {"id":"p01","label":"duplicate","reason":"same reporting content intent","left":{"queryText":"marketing analytics reporting guide","queryFingerprint":"review-p01-left"},"right":{"queryText":"marketing analytics reporting guides","queryFingerprint":"review-p01-right"}},
+    {"id":"p02","label":"duplicate","reason":"singular plural paraphrase","left":{"queryText":"saas conversion report template","queryFingerprint":"review-p02-left"},"right":{"queryText":"saas conversion reports template","queryFingerprint":"review-p02-right"}},
+    {"id":"p03","label":"duplicate","reason":"same dashboard content intent","left":{"queryText":"product marketing dashboard examples","queryFingerprint":"review-p03-left"},"right":{"queryText":"product marketing dashboards examples","queryFingerprint":"review-p03-right"}},
+    {"id":"p04","label":"duplicate","reason":"same measurement content intent","left":{"queryText":"campaign performance measurement playbook","queryFingerprint":"review-p04-left"},"right":{"queryText":"campaign performance measurement playbooks","queryFingerprint":"review-p04-right"}},
+    {"id":"p05","label":"duplicate","reason":"same attribution content intent","left":{"queryText":"b2b marketing attribution guide","queryFingerprint":"review-p05-left"},"right":{"queryText":"b2b marketing attribution guides","queryFingerprint":"review-p05-right"}},
+    {"id":"p06","label":"duplicate","reason":"same audit content intent","left":{"queryText":"website conversion audit checklist","queryFingerprint":"review-p06-left"},"right":{"queryText":"website conversion audits checklist","queryFingerprint":"review-p06-right"}},
+    {"id":"p07","label":"duplicate","reason":"same search content intent","left":{"queryText":"organic search demand analysis","queryFingerprint":"review-p07-left"},"right":{"queryText":"organic search demands analysis","queryFingerprint":"review-p07-right"}},
+    {"id":"p08","label":"duplicate","reason":"same launch content intent","left":{"queryText":"product launch metrics framework","queryFingerprint":"review-p08-left"},"right":{"queryText":"product launch metric framework","queryFingerprint":"review-p08-right"}},
+    {"id":"p09","label":"duplicate","reason":"same retention content intent","left":{"queryText":"customer retention reporting benchmark","queryFingerprint":"review-p09-left"},"right":{"queryText":"customer retention reports benchmark","queryFingerprint":"review-p09-right"}},
+    {"id":"p10","label":"duplicate","reason":"same pipeline content intent","left":{"queryText":"revenue pipeline analytics tutorial","queryFingerprint":"review-p10-left"},"right":{"queryText":"revenue pipeline analytic tutorial","queryFingerprint":"review-p10-right"}},
+    {"id":"n01","label":"distinct","reason":"reporting versus onboarding","left":{"queryText":"marketing analytics reporting guide","queryFingerprint":"review-n01-left"},"right":{"queryText":"customer onboarding email sequence","queryFingerprint":"review-n01-right"}},
+    {"id":"n02","label":"distinct","reason":"conversion versus technical seo","left":{"queryText":"saas conversion report template","queryFingerprint":"review-n02-left"},"right":{"queryText":"technical seo migration checklist","queryFingerprint":"review-n02-right"}},
+    {"id":"n03","label":"distinct","reason":"dashboard versus pricing","left":{"queryText":"product marketing dashboard examples","queryFingerprint":"review-n03-left"},"right":{"queryText":"usage based pricing calculator","queryFingerprint":"review-n03-right"}},
+    {"id":"n04","label":"distinct","reason":"campaign versus churn","left":{"queryText":"campaign performance measurement playbook","queryFingerprint":"review-n04-left"},"right":{"queryText":"subscription churn prevention tactics","queryFingerprint":"review-n04-right"}},
+    {"id":"n05","label":"distinct","reason":"attribution versus referrals","left":{"queryText":"b2b marketing attribution guide","queryFingerprint":"review-n05-left"},"right":{"queryText":"customer referral program incentives","queryFingerprint":"review-n05-right"}},
+    {"id":"n06","label":"distinct","reason":"audit versus email","left":{"queryText":"website conversion audit checklist","queryFingerprint":"review-n06-left"},"right":{"queryText":"cold email personalization examples","queryFingerprint":"review-n06-right"}},
+    {"id":"n07","label":"distinct","reason":"search versus partnerships","left":{"queryText":"organic search demand analysis","queryFingerprint":"review-n07-left"},"right":{"queryText":"strategic partnership outreach template","queryFingerprint":"review-n07-right"}},
+    {"id":"n08","label":"distinct","reason":"launch versus support","left":{"queryText":"product launch metrics framework","queryFingerprint":"review-n08-left"},"right":{"queryText":"customer support response automation","queryFingerprint":"review-n08-right"}},
+    {"id":"n09","label":"distinct","reason":"retention versus localization","left":{"queryText":"customer retention reporting benchmark","queryFingerprint":"review-n09-left"},"right":{"queryText":"international website localization strategy","queryFingerprint":"review-n09-right"}},
+    {"id":"n10","label":"distinct","reason":"pipeline versus social","left":{"queryText":"revenue pipeline analytics tutorial","queryFingerprint":"review-n10-left"},"right":{"queryText":"linkedin thought leadership calendar","queryFingerprint":"review-n10-right"}}
+  ]
+}

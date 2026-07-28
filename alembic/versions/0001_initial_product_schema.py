@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
-from app.domains.operator.migration import create_operator_schema, drop_operator_schema
+from app.modules.operator.migration import create_operator_schema, drop_operator_schema
 
 revision: str = "0001_initial_product_schema"
 down_revision: str | None = None

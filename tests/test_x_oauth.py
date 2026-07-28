@@ -12,17 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.security import create_access_token, hash_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.auth.models import AuthSession
-from app.domains.integrations.models import IntegrationConnection, IntegrationOAuthTransaction
-from app.domains.integrations.x_oauth import (
+from app.main import create_app
+from app.modules.identity.models.oauth import AuthSession
+from app.modules.identity.models.users import User
+from app.modules.integrations.models import IntegrationConnection, IntegrationOAuthTransaction
+from app.modules.integrations.providers.x_oauth import (
     FakeIntegrationCredentialCipher,
     FakeXOAuthProvider,
     HttpXOAuthProvider,
     XOAuthGrant,
 )
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
-from app.main import create_app
+from app.modules.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
 
 
 def x_grant(account_id: str = "x-account-1") -> XOAuthGrant:
@@ -217,6 +217,8 @@ def test_x_oauth_connect_encrypts_credentials_and_exposes_only_safe_connection_f
     async def persisted() -> tuple[str, str, int]:
         async with sessions() as db:
             connection = (await db.scalars(select(IntegrationConnection))).one()
+            assert connection.credentials_ciphertext is not None
+            assert connection.credential_key_version is not None
             transactions = int(
                 (await db.scalar(select(func.count()).select_from(IntegrationOAuthTransaction)))
                 or 0

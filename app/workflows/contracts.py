@@ -25,3 +25,54 @@ class OnboardingEventMetadata(WorkflowMetadata):
     user_id: UUID
     workspace_id: UUID
     schema_version: Literal[1]
+
+
+class WebsiteCrawlEventMetadata(WorkflowMetadata):
+    run_id: UUID
+    workspace_id: UUID
+    product_id: UUID
+    source_id: UUID
+    schema_version: Literal[1]
+    correlation_id: UUID
+
+
+class SearchSyncEventMetadata(WorkflowMetadata):
+    run_id: UUID
+    workspace_id: UUID
+    product_id: UUID
+    source_id: UUID
+    schema_version: Literal[1]
+    correlation_id: UUID
+
+
+class OpportunityDetectionEventMetadata(WorkflowMetadata):
+    run_id: UUID
+    workspace_id: UUID
+    product_id: UUID
+    schema_version: Literal[1]
+    correlation_id: UUID
+
+
+class WeeklyGrowthEventMetadata(WorkflowMetadata):
+    run_id: UUID
+    workspace_id: UUID
+    product_id: UUID
+    schema_version: Literal[1]
+    correlation_id: UUID
+
+
+class WeeklyGrowthReadyEventMetadata(WorkflowMetadata):
+    plan_id: UUID
+    plan_revision: int
+    workspace_id: UUID
+    product_id: UUID
+    schema_version: Literal[1]
+    correlation_id: UUID
+
+
+class MeasurementFollowupEventMetadata(WorkflowMetadata):
+    measurement_id: UUID
+    workspace_id: UUID
+    product_id: UUID
+    schema_version: Literal[1]
+    correlation_id: UUID

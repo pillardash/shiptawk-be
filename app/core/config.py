@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated, Literal, cast
 from urllib.parse import urlsplit
@@ -67,6 +68,13 @@ class Settings(BaseSettings):
         default_factory=lambda: ["tweet.read", "tweet.write", "users.read", "offline.access"]
     )
     integration_credentials_encryption_key: SecretStr | None = None
+    integration_credentials_active_key_version: str = "v1"
+    integration_credentials_previous_encryption_keys: dict[str, SecretStr] = Field(
+        default_factory=dict
+    )
+    google_search_enabled: bool = False
+    google_search_client_id: str | None = None
+    google_search_client_secret: SecretStr | None = None
     github_app_id: int | None = None
     github_app_private_key: SecretStr | None = None
     github_webhook_enabled: bool = False
@@ -81,6 +89,9 @@ class Settings(BaseSettings):
     generation_provider: GenerationProviderName | None = None
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4.1-mini"
+    openai_input_price_per_million: Decimal = Decimal("0.40")
+    openai_output_price_per_million: Decimal = Decimal("1.60")
+    openai_pricing_version: str = "openai-2025-04-14"
     generation_timeout_seconds: float = 30.0
     oauth_http_timeout_seconds: float = 10.0
     browser_cookie_secure: bool = False
@@ -204,6 +215,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 "INTEGRATION_CREDENTIALS_ENCRYPTION_KEY must be a Fernet key."
             ) from exc
+        return value
+
+    @field_validator("integration_credentials_previous_encryption_keys")
+    @classmethod
+    def validate_previous_integration_credential_keys(
+        cls, value: dict[str, SecretStr]
+    ) -> dict[str, SecretStr]:
+        for version, secret in value.items():
+            if not version.strip():
+                raise ValueError("Integration credential key versions must not be empty.")
+            try:
+                Fernet(secret.get_secret_value().encode("ascii"))
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise ValueError(
+                    "INTEGRATION_CREDENTIALS_PREVIOUS_ENCRYPTION_KEYS values must be Fernet keys."
+                ) from exc
         return value
 
     @field_validator("github_webhook_payload_encryption_key", mode="before")
@@ -428,6 +455,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 "INTEGRATION_CREDENTIALS_ENCRYPTION_KEY is required when X publishing is enabled."
             )
+        if self.google_search_enabled:
+            if not self.google_search_client_id:
+                raise ValueError(
+                    "GOOGLE_SEARCH_CLIENT_ID is required when Google Search is enabled."
+                )
+            if self.google_search_client_secret is None:
+                raise ValueError(
+                    "GOOGLE_SEARCH_CLIENT_SECRET is required when Google Search is enabled."
+                )
+            if self.oauth_transaction_encryption_key is None:
+                raise ValueError(
+                    "OAUTH_TRANSACTION_ENCRYPTION_KEY is required when Google Search is enabled."
+                )
+            if self.integration_credentials_encryption_key is None:
+                raise ValueError(
+                    "INTEGRATION_CREDENTIALS_ENCRYPTION_KEY is required when Google Search "
+                    "is enabled."
+                )
+            if not self.inngest_enabled:
+                raise ValueError("INNGEST_ENABLED=true is required when Google Search is enabled.")
         if (self.github_app_id is None) != (self.github_app_private_key is None):
             raise ValueError(
                 "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be configured together."
@@ -453,12 +500,24 @@ class Settings(BaseSettings):
                 raise ValueError("INNGEST_EVENT_KEY is required when Inngest is enabled.")
             if self.app_env == "production" and self.inngest_signing_key is None:
                 raise ValueError("INNGEST_SIGNING_KEY is required for production Inngest.")
-            if self.github_webhook_payload_encryption_key is None:
+        if self.github_webhook_enabled and self.github_webhook_payload_encryption_key is None:
+            raise ValueError(
+                "GITHUB_WEBHOOK_PAYLOAD_ENCRYPTION_KEY is required when the GitHub webhook "
+                "is enabled."
+            )
+        if self.integration_credentials_previous_encryption_keys:
+            if self.integration_credentials_encryption_key is None:
                 raise ValueError(
-                    "GITHUB_WEBHOOK_PAYLOAD_ENCRYPTION_KEY is required when Inngest is enabled."
+                    "INTEGRATION_CREDENTIALS_ENCRYPTION_KEY is required when previous credential "
+                    "keys are configured."
                 )
-            if self.generation_provider is None:
-                raise ValueError("GENERATION_PROVIDER is required when Inngest is enabled.")
+            if (
+                self.integration_credentials_active_key_version
+                in self.integration_credentials_previous_encryption_keys
+            ):
+                raise ValueError(
+                    "The active integration credential key version must not also be previous."
+                )
         if self.generation_provider == "openai" and self.openai_api_key is None:
             raise ValueError("OPENAI_API_KEY is required when GENERATION_PROVIDER=openai.")
         if self.inngest_event_api_base_url is not None:
@@ -564,7 +623,7 @@ class Settings(BaseSettings):
             raise ValueError("CORS_ORIGINS must be configured in production.")
         if self.jwt_secret_key == "change-me":
             raise ValueError("JWT_SECRET_KEY must be changed in production.")
-        if self.oauth_enabled_providers:
+        if self.oauth_enabled_providers or self.google_search_enabled:
             if not self.browser_cookie_secure:
                 raise ValueError("BROWSER_COOKIE_SECURE must be true for production OAuth.")
             if self.browser_cookie_samesite != "lax":
@@ -635,6 +694,18 @@ class Settings(BaseSettings):
     @property
     def resolved_browser_allowed_origins(self) -> list[str]:
         return self.browser_allowed_origins or [self.frontend_url]
+
+    @property
+    def integration_credentials_key_ring(self) -> dict[str, str]:
+        keys = {
+            version: secret.get_secret_value()
+            for version, secret in self.integration_credentials_previous_encryption_keys.items()
+        }
+        if self.integration_credentials_encryption_key is not None:
+            keys[self.integration_credentials_active_key_version] = (
+                self.integration_credentials_encryption_key.get_secret_value()
+            )
+        return keys
 
 
 @lru_cache

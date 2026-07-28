@@ -1,12 +1,16 @@
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.domains.achievement_digests.sender import EmailServiceAchievementDigestSender
-from app.domains.achievement_digests.service import deliver_stored_digest, signed_unsubscribe_url
-from app.domains.legacy.models import achievement_digests
-from app.domains.users.models import User
+from app.modules.achievement_digests.models import achievement_digests
+from app.modules.achievement_digests.providers.email import EmailServiceAchievementDigestSender
+from app.modules.achievement_digests.services.delivery import (
+    deliver_stored_digest,
+    signed_unsubscribe_url,
+)
+from app.modules.identity.models.users import User
+from app.modules.products.models import Product
 from app.services.email.base import EmailService
 
 
@@ -45,6 +49,11 @@ class AchievementDigestWorkflow:
                         User.email,
                     )
                     .join(User, User.id == achievement_digests.c.user_id)
+                    .outerjoin(
+                        Product,
+                        (Product.workspace_id == achievement_digests.c.workspace_id)
+                        & (Product.id == achievement_digests.c.product_id),
+                    )
                     .where(
                         achievement_digests.c.frequency == frequency,
                         achievement_digests.c.should_send.is_(True),
@@ -52,6 +61,11 @@ class AchievementDigestWorkflow:
                         User.is_active.is_(True),
                         User.email_notifications_enabled.is_(True),
                         User.email.is_not(None),
+                        or_(
+                            Product.id.is_(None),
+                            Product.weekly_growth_operator_enabled.is_(False),
+                            Product.operator_email_enabled.is_(False),
+                        ),
                     )
                     .order_by(achievement_digests.c.id)
                 )

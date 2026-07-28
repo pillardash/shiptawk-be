@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.security import decode_access_token, decode_access_token_claims, verify_csrf_token
 from app.db.session import get_db
-from app.domains.auth.browser_service import get_bound_session
-from app.domains.users.models import User
-from app.domains.users.service import get_active_user_by_id
+from app.modules.identity.models.users import User
+from app.modules.identity.services.browser_oauth import get_bound_session
+from app.modules.identity.services.users import get_active_user_by_id
+from app.modules.llm.services.llm_execution_service import LLMExecutionService
 from app.services.jobs.base import JobService
 from app.shared.exceptions import UnauthorizedError
 
@@ -72,5 +73,22 @@ async def get_current_user(request: Request, token: TokenDep, db: DbDep) -> User
     return await get_active_user_by_id(db, user_id)
 
 
+async def get_mutation_user(request: Request, token: TokenDep, db: DbDep) -> User:
+    if token is not None:
+        return await get_current_user(request, token, db)
+    browser_session = await get_browser_session(request, db)
+    return (await require_cookie_auth_csrf(request, browser_session))[0]
+
+
+MutationUserDep = Annotated[User, Depends(get_mutation_user)]
+
+
 def get_jobs(request: Request) -> JobService:
     return cast(JobService, request.app.state.jobs)
+
+
+def get_llm_execution_service(request: Request) -> LLMExecutionService:
+    return cast(LLMExecutionService, request.app.state.llm_execution_service)
+
+
+LLMExecutionServiceDep = Annotated[LLMExecutionService, Depends(get_llm_execution_service)]

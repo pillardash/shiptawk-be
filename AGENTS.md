@@ -3,13 +3,18 @@
 ## Authority And Scope
 
 - This repository is Shiptawk's FastAPI product backend, derived from the reusable boilerplate identified in `BOILERPLATE_PROVENANCE.md`.
-- The parent `../AGENTS.md` and `../docs/ai-marketing-operator-conversion-plan.md` govern cross-repository product and migration decisions.
-- This backend owns authentication, authorization, workspace tenancy, persistence, migrations, integrations, webhooks, durable workflows, AI execution, approvals, publishing policy, and audit trails.
-- Keep the backend independently runnable and testable from the Next.js frontend.
 
 ## Product Boundaries
 
-- Put Shiptawk domains under `app/domains/`; do not place product behavior in generic infrastructure modules.
+- Put Shiptawk product modules under `app/modules/`; do not place product behavior in generic infrastructure modules.
+- Extend an existing aggregate through its owning module's responsibility packages. Product profiles, product repositories, product audit history, and other product-only lifecycles belong directly in `app/modules/products/models/`, `schemas/`, `repositories/`, `services/`, `policies/`, `enums/`, and `api/`. Do not create nested domain modules such as `products/profiles/`. Create a top-level module only when the domain has independent ownership, authorization, persistence lifecycle, and use cases beyond a single parent aggregate.
+- Name non-model implementation files with their responsibility suffix so ownership is visible at the import site: `*_router.py`, `*_repository.py`, `*_service.py`, `*_schema.py`, `*_policy.py`, and `*_enum.py`. Package `__init__.py` files contain no implementation logic.
+- Name model files after the singular form of their table without a responsibility suffix. For example, `product_profiles` maps to `ProductProfile` in `product_profile.py`, and `product_profile_audit_events` maps to `ProductProfileAuditEvent` in `product_profile_audit_event.py`.
+- Organize each module by responsibility using only the packages it needs: `api/`, `models/`, `schemas/`, `repositories/`, `services/`, `policies/`, `events/`, `detectors/`, `enums/`, and `providers/`.
+- Keep SQLAlchemy definitions in the owning module's `models/`; do not recreate a cross-domain persistence registry.
+- Repositories perform workspace-scoped queries and flushes. Services own application use cases and transaction boundaries. Policies and detectors remain pure.
+- Put external provider protocols, HTTP/SDK implementations, and deterministic fakes under the owning module's `providers/`.
+- Do not add flat `router.py`, `models.py`, `schemas.py`, `repository.py`, `service.py`, or `provider.py` files at a module root, and do not add runtime import aliases for obsolete paths.
 - Inngest is the current durable workflow authority. Backend ingestion publishes metadata-only events; Inngest functions orchestrate and domain services own decisions and invariants.
 - Temporal is deferred. Do not add a parallel Temporal execution path without an explicit Inngest replacement and cutover plan.
 - Product prompts, evidence policies, evaluations, and model-routing policy live here, not in the reusable boilerplate.

@@ -7,15 +7,21 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from app.core.config import get_settings
+from app.db import outbox as outbox_models  # noqa: F401
 from app.db.base import Base
-from app.domains.auth import models as auth_models  # noqa: F401
-from app.domains.evidence import models as evidence_models  # noqa: F401
-from app.domains.integrations import models as integration_models  # noqa: F401
-from app.domains.legacy import models as legacy_models  # noqa: F401
-from app.domains.operator import models as operator_models  # noqa: F401
-from app.domains.products import models as product_models  # noqa: F401
-from app.domains.users import models as user_models  # noqa: F401
-from app.domains.workspaces import models as workspace_models  # noqa: F401
+from app.modules.achievement_digests import models as achievement_digest_models  # noqa: F401
+from app.modules.drafts import models as draft_models  # noqa: F401
+from app.modules.evidence import models as evidence_models  # noqa: F401
+from app.modules.identity import models as identity_models  # noqa: F401
+from app.modules.integrations import models as integration_models  # noqa: F401
+from app.modules.llm import models as llm_models  # noqa: F401
+from app.modules.llm.models import llm_execution as llm_execution_models  # noqa: F401
+from app.modules.llm.models import llm_execution_attempt as llm_attempt_models  # noqa: F401
+from app.modules.operator import models as operator_models  # noqa: F401
+from app.modules.products import models as product_models  # noqa: F401
+from app.modules.repos import models as repos_models  # noqa: F401
+from app.modules.search_intelligence import models as search_intelligence_models  # noqa: F401
+from app.modules.workspaces import models as workspace_models  # noqa: F401
 
 config = context.config
 

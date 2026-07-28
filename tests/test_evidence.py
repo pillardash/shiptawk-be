@@ -10,13 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.auth.models import AuthSession
-from app.domains.evidence.models import Claim, ClaimEvidenceLink, EvidenceExcerpt, EvidenceItem
-from app.domains.evidence.router import router as evidence_router
-from app.domains.products.models import Product
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.main import create_app
+from app.modules.evidence.api.router import router as evidence_router
+from app.modules.evidence.models import Claim, ClaimEvidenceLink, EvidenceExcerpt, EvidenceItem
+from app.modules.identity.models.oauth import AuthSession
+from app.modules.identity.models.users import User
+from app.modules.products.models import Product
+from app.modules.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
 
 
 @pytest.fixture

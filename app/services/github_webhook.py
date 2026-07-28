@@ -9,7 +9,8 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domains.legacy.models import github_raw_event_consumers, github_raw_events, repos
+from app.modules.integrations.models import github_raw_event_consumers, github_raw_events
+from app.modules.repos.models import repos
 
 SUPPORTED_GITHUB_EVENTS = frozenset({"push", "pull_request", "release"})
 GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")

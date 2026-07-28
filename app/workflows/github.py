@@ -10,17 +10,14 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.domains.integrations.event_normalizer import (
-    EventNormalizer,
-    NormalizedEvent,
-    should_process_tracked_branch,
-)
-from app.domains.legacy.models import (
+from app.modules.integrations.events import EventNormalizer, NormalizedEvent
+from app.modules.integrations.models import (
     github_raw_event_consumers,
     github_raw_events,
     normalized_events,
-    repos,
 )
+from app.modules.integrations.policies.branches import should_process_tracked_branch
+from app.modules.repos.models import repos
 from app.services.github_webhook import decrypt_github_webhook_payload
 
 

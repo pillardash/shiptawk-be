@@ -18,6 +18,11 @@ class BadRequestError(AppError):
     code = "bad_request"
 
 
+class UnprocessableEntityError(AppError):
+    status_code = 422
+    code = "unprocessable_entity"
+
+
 class ConflictError(AppError):
     status_code = 409
     code = "conflict"

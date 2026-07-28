@@ -1,10 +1,13 @@
 from app.core.config import Settings
-from app.jobs.registry import TASK_REGISTRY
 from app.services.jobs.base import JobService
 from app.services.jobs.inline import InlineJobService
 
 
 def create_job_service(settings: Settings) -> JobService:
+    # Import lazily so importing app.services.jobs.base does not recurse through
+    # the package initializer while the task registry is being constructed.
+    from app.jobs.registry import TASK_REGISTRY
+
     if settings.jobs_backend == "inline":
         return InlineJobService(default_queue=settings.jobs_queue_name, registry=TASK_REGISTRY)
 

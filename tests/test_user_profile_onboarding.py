@@ -16,18 +16,13 @@ from app.core.exception_handlers import register_exception_handlers
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.auth.models import AuthSession, OAuthIdentity
-from app.domains.integrations.models import IntegrationConnection
-from app.domains.legacy.models import product_repositories, repos
-from app.domains.products.models import Product
-from app.domains.users.models import User
-from app.domains.users.onboarding import (
-    DurableOnboardingGenerationTrigger,
-    OnboardingGenerationRequest,
-)
-from app.domains.users.router import router as user_router
-from app.domains.users.schemas import UserOnboardingStatusResponse
-from app.domains.users.service import (
+from app.modules.identity.api.router import router as user_router
+from app.modules.identity.events.onboarding import OnboardingGenerationRequest
+from app.modules.identity.models.oauth import AuthSession, OAuthIdentity
+from app.modules.identity.models.users import User
+from app.modules.identity.providers.onboarding import DurableOnboardingGenerationTrigger
+from app.modules.identity.schemas.users import UserOnboardingStatusResponse
+from app.modules.identity.services.users import (
     complete_onboarding,
     get_active_user_by_id,
     get_generation_settings,
@@ -36,7 +31,11 @@ from app.domains.users.service import (
     get_user_profile,
     record_dashboard_view,
 )
-from app.domains.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
+from app.modules.integrations.models import IntegrationConnection
+from app.modules.products.models import Product, product_repositories
+from app.modules.repos.models import repos
+from app.modules.workspaces.enums import WorkspaceRole
+from app.modules.workspaces.models import Workspace, WorkspaceMembership
 from app.shared.exceptions import ConflictError, UnauthorizedError
 from app.workflows.publisher import MetadataEvent
 

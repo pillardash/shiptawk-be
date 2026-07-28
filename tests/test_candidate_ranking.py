@@ -1,7 +1,11 @@
-from app.domains.generation.content_memory import ContentMemory
-from app.domains.generation.evidence import GeneratedVariant, PublicSafeSummary, SupportedClaim
-from app.domains.generation.ranking import TweetOptionRanker
-from app.domains.integrations.event_normalizer import NormalizedEvent
+from app.modules.drafts.policies.ranking import TweetOptionRanker
+from app.modules.drafts.schemas.evidence import (
+    GeneratedVariant,
+    PublicSafeSummary,
+    SupportedClaim,
+)
+from app.modules.drafts.schemas.memory import ContentMemory
+from app.modules.integrations.events import NormalizedEvent
 
 
 def event() -> NormalizedEvent:

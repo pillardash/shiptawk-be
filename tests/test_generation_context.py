@@ -1,11 +1,11 @@
-from app.domains.generation.context import (
-    GenerationContextBuilder,
+from app.modules.drafts.schemas.context import (
     ProductContextInput,
-    RepositoryContextInput,
     SafetySettingsInput,
     UserContextInput,
     VoiceProfileInput,
 )
+from app.modules.drafts.services.generation_context_service import GenerationContextBuilder
+from app.modules.repos.schemas.generation_context_schema import RepositoryContextInput
 
 
 def user() -> UserContextInput:

@@ -191,6 +191,35 @@ def test_oauth_transaction_encryption_key_must_be_fernet_compatible() -> None:
         Settings(oauth_transaction_encryption_key="not-a-fernet-key")
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, "GOOGLE_SEARCH_CLIENT_ID"),
+        ({"google_search_client_id": "client"}, "GOOGLE_SEARCH_CLIENT_SECRET"),
+        (
+            {"google_search_client_id": "client", "google_search_client_secret": "secret"},
+            "OAUTH_TRANSACTION_ENCRYPTION_KEY",
+        ),
+        (
+            {
+                "google_search_client_id": "client",
+                "google_search_client_secret": "secret",
+                "oauth_transaction_encryption_key": (
+                    "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+                ),
+            },
+            "INTEGRATION_CREDENTIALS_ENCRYPTION_KEY",
+        ),
+    ],
+)
+def test_enabled_google_search_requires_complete_encrypted_oauth_configuration(
+    monkeypatch: MonkeyPatch, overrides: dict[str, object], expected: str
+) -> None:
+    monkeypatch.delenv("OAUTH_TRANSACTION_ENCRYPTION_KEY", raising=False)
+    with pytest.raises(ValidationError, match=expected):
+        Settings.model_validate({"google_search_enabled": True, **overrides})
+
+
 def test_production_browser_oauth_requires_shiptawk_safe_cookie_configuration() -> None:
     with pytest.raises(ValidationError, match="BROWSER_COOKIE_SECURE"):
         Settings(
@@ -322,27 +351,48 @@ def test_inngest_workflows_are_disabled_by_default() -> None:
     assert settings.inngest_enabled is False
 
 
-@pytest.mark.parametrize(
-    ("overrides", "expected"),
-    [
-        ({}, "INNGEST_EVENT_KEY"),
-        ({"inngest_event_key": "event-key"}, "GITHUB_WEBHOOK_PAYLOAD_ENCRYPTION_KEY"),
-        (
-            {
-                "inngest_event_key": "event-key",
-                "github_webhook_payload_encryption_key": (
-                    "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
-                ),
+def test_enabled_inngest_requires_only_its_event_key_in_local_development() -> None:
+    with pytest.raises(ValidationError, match="INNGEST_EVENT_KEY"):
+        Settings(inngest_enabled=True)
+
+    settings = Settings(inngest_enabled=True, inngest_event_key="event-key")
+
+    assert settings.github_webhook_payload_encryption_key is None
+    assert settings.generation_provider is None
+
+
+def test_enabled_google_search_requires_durable_inngest_delivery() -> None:
+    with pytest.raises(ValidationError, match="INNGEST_ENABLED"):
+        Settings(
+            google_search_enabled=True,
+            google_search_client_id="client",
+            google_search_client_secret="secret",
+            oauth_transaction_encryption_key=("MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="),
+            integration_credentials_encryption_key=("MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="),
+        )
+
+
+def test_integration_credential_key_ring_preserves_previous_versions() -> None:
+    settings = Settings(
+        integration_credentials_encryption_key=("MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="),
+        integration_credentials_active_key_version="v2",
+        integration_credentials_previous_encryption_keys={
+            "v1": "iezSZZMKlqtExgXjvfgFPjnpXI7Vb9RWcYNnNr84jm8="
+        },
+    )
+
+    assert set(settings.integration_credentials_key_ring) == {"v1", "v2"}
+
+
+def test_integration_credential_key_ring_rejects_duplicate_active_version() -> None:
+    with pytest.raises(ValidationError, match="active integration credential key version"):
+        Settings(
+            integration_credentials_encryption_key=("MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="),
+            integration_credentials_active_key_version="v2",
+            integration_credentials_previous_encryption_keys={
+                "v2": "iezSZZMKlqtExgXjvfgFPjnpXI7Vb9RWcYNnNr84jm8="
             },
-            "GENERATION_PROVIDER",
-        ),
-    ],
-)
-def test_enabled_inngest_rejects_incomplete_configuration(
-    overrides: dict[str, str], expected: str
-) -> None:
-    with pytest.raises(ValidationError, match=expected):
-        Settings.model_validate({"inngest_enabled": True, **overrides})
+        )
 
 
 def test_production_inngest_requires_signing_key() -> None:

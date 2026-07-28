@@ -7,18 +7,17 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.domains.auth.browser_service import provision_oauth_session
-from app.domains.auth.models import OAuthIdentity
-from app.domains.legacy.models import (
+from app.modules.identity.models.oauth import OAuthIdentity
+from app.modules.identity.models.users import User
+from app.modules.identity.services.browser_oauth import provision_oauth_session
+from app.modules.integrations.models import (
     github_raw_event_consumers,
     github_raw_events,
     normalized_events,
-    product_repositories,
-    repos,
 )
-from app.domains.products.models import Product
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace
+from app.modules.products.models import Product, product_repositories
+from app.modules.repos.models import repos
+from app.modules.workspaces.models import Workspace
 from app.services.github_webhook import GitHubWebhookEnvelope, ingest_github_webhook
 from app.services.oauth import OAuthIdentityData
 

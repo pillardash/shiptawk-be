@@ -1,0 +1,2 @@
+APPROVED_EVIDENCE_STATUS = "approved"
+BLOCKED_EVIDENCE_CLASSIFICATIONS = ("blocked", "confidential")

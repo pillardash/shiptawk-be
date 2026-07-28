@@ -3,8 +3,12 @@ from collections.abc import Generator
 import pytest
 from pytest import MonkeyPatch
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db.session import reset_database_state
+
+# Test collection imports the application before fixtures run. Disable dotenv
+# loading process-wide so developer credentials cannot affect test behavior.
+Settings.model_config["env_file"] = None
 
 
 @pytest.fixture(autouse=True)

@@ -68,6 +68,9 @@ uv run pytest --cov
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app tests
+
+# Deterministic Phase 4 opportunity-engine release gates
+uv run pytest -q tests/test_opportunity_engine_evaluation.py
 ```
 
 Useful development commands:
@@ -318,8 +321,28 @@ app/
   api/       HTTP routers and API versioning
   core/      settings, logging, middleware, and exception handling
   db/        SQLAlchemy base, engine, and session dependencies
-  domains/   future business domains
+  modules/   product capabilities grouped as vertical modules
+  services/  provider-neutral infrastructure adapters
+  workflows/ durable product-workflow orchestration
   shared/    reusable application primitives
 ```
 
-The first implementation pass intentionally includes infrastructure only. Domain logic and auth should be added as separate focused modules.
+Product behavior belongs in focused modules. Routers and workflows orchestrate module services rather than owning domain decisions.
+
+Each product module creates only the responsibility packages it uses:
+
+```text
+<module>/
+  api/           HTTP routing and response mapping
+  models/        module-owned SQLAlchemy definitions
+  schemas/       Pydantic contracts
+  repositories/  workspace-scoped database access
+  services/      application use cases and transactions
+  policies/      pure permission and state rules
+  events/        versioned message contracts
+  detectors/     deterministic detection and scoring
+  enums/         shared domain vocabulary
+  providers/     external provider protocols, adapters, and fakes
+```
+
+Unused responsibility packages are not created. See `../architeture.md` for the dependency rules and module ownership map.

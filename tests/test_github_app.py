@@ -13,15 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.workspaces.models import WorkspaceMembership, WorkspaceRole
 from app.main import create_app
-from app.services.github_app import (
+from app.modules.integrations.providers.github import (
     FakeGitHubAppProvider,
     GitHubAppError,
     GitHubInstallation,
     GitHubRepository,
     HttpGitHubAppProvider,
 )
+from app.modules.workspaces.models import WorkspaceMembership, WorkspaceRole
 from app.services.oauth import FakeOAuthProvider, OAuthIdentityData, OAuthProviderRegistry
 
 

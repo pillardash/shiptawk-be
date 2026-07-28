@@ -1,6 +1,6 @@
-from app.domains.generation.angles import AngleSelector
-from app.domains.generation.evidence import PublicSafeSummary
-from app.domains.integrations.event_normalizer import NormalizedEvent
+from app.modules.drafts.policies.angles import AngleSelector
+from app.modules.drafts.schemas.evidence import PublicSafeSummary
+from app.modules.integrations.events import NormalizedEvent
 
 
 def event(event_type: str) -> NormalizedEvent:
@@ -62,9 +62,7 @@ def test_utf16_benefit_length_triggers_user_benefit_bonus() -> None:
 
 
 def test_keyword_rules_use_substrings_and_ascii_version_digits() -> None:
-    selected = AngleSelector().select(
-        event("push"), summary(public="Debug shipping progress for V2")
-    )
+    selected = AngleSelector().select(event("push"), summary(public="Debug repos progress for V2"))
 
     assert selected.best == "problem_solved"
     assert selected.alternates[:2] == ["founder_build_in_public", "user_benefit"]

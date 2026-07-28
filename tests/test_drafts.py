@@ -9,35 +9,39 @@ from fastapi.testclient import TestClient
 from sqlalchemy import StaticPool, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.exception_handlers import register_exception_handlers
 from app.core.security import create_access_token, sign_csrf_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.auth.models import AuthSession
-from app.domains.drafts.generation import _ensure_allowed, _safety_settings, _voice_profile
-from app.domains.drafts.repository import (
-    get_draft_review_for_workspace,
-    list_drafts_for_workspace,
-)
-from app.domains.drafts.router import router as drafts_router
-from app.domains.generation.fake_provider import DeterministicGenerationProvider
-from app.domains.generation.models import GenerationTelemetry, ProviderGenerationResult
-from app.domains.integrations.event_normalizer import NormalizedEvent
-from app.domains.legacy.models import (
+from app.modules.drafts.api.router import router as drafts_router
+from app.modules.drafts.models import (
     draft_feedback_events,
     draft_status_events,
     drafts,
-    event_evaluations,
-    generation_runs,
+    tweet_candidates,
+)
+from app.modules.drafts.policies.regeneration import ensure_regeneration_allowed
+from app.modules.drafts.repositories.drafts import (
+    get_draft_review_for_workspace,
+    list_drafts_for_workspace,
+)
+from app.modules.drafts.schemas.context import EffectiveGenerationContext
+from app.modules.drafts.services.regeneration import _safety_settings, _voice_profile
+from app.modules.identity.models.oauth import AuthSession
+from app.modules.identity.models.users import User
+from app.modules.integrations.events import NormalizedEvent
+from app.modules.integrations.models import (
     github_raw_event_consumers,
     github_raw_events,
     normalized_events,
-    repos,
-    tweet_candidates,
 )
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
-from app.main import create_app
+from app.modules.llm.models import generation_runs
+from app.modules.operator.models import event_evaluations
+from app.modules.products.models import Product, product_repositories
+from app.modules.repos.models import repos
+from app.modules.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.shared.exceptions import ConflictError
+from tests.test_generation_orchestration import central_llm
 
 
 @pytest.fixture
@@ -57,7 +61,10 @@ def draft_client() -> Generator[tuple[TestClient, async_sessionmaker[AsyncSessio
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.drop_all)
 
-    app = create_app()
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.state.generation_provider = None
+    app.state.generation_model = "default"
     app.include_router(drafts_router, prefix="/api/v1")
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as client:
@@ -878,30 +885,45 @@ def test_angle_regeneration_is_idempotent_persisted_and_requires_reapproval(
             await db.commit()
 
     client.portal.call(approve_existing)
-    provider = DeterministicGenerationProvider(
-        result=ProviderGenerationResult(
-            output={
-                "candidates": [
-                    {
-                        "content": "Teams can now review safer tenant-scoped draft data.",
-                        "variant": "customer_value",
-                        "angle": "user_benefit",
-                        "rationale": "Connects the shipped change to a user benefit.",
-                        "evidenceIds": ["event.change.1", "event.change.2"],
-                    }
-                ]
-            },
-            telemetry=GenerationTelemetry(
-                provider="deterministic",
-                model="fake-v1",
-                latency_ms=5,
-                correlation_id="draft-correlation",
-            ),
-        )
+
+    async def attach_product() -> None:
+        async with sessions() as db:
+            repo_id = await db.scalar(
+                select(repos.c.id).where(repos.c.workspace_id == workspace.id)
+            )
+            assert repo_id is not None
+            product = Product(workspace_id=workspace.id, user_id=user.id, name="Draft product")
+            db.add(product)
+            await db.flush()
+            await db.execute(
+                insert(product_repositories).values(
+                    id=uuid4(),
+                    workspace_id=workspace.id,
+                    product_id=product.id,
+                    repo_id=repo_id,
+                    repo_role="backend",
+                    is_primary_repo=True,
+                )
+            )
+            await db.commit()
+
+    client.portal.call(attach_product)
+    llm, provider = central_llm(
+        sessions,
+        {
+            "candidates": [
+                {
+                    "content": "Teams can now review safer tenant-scoped draft data.",
+                    "variant": "customer_value",
+                    "angle": "user_benefit",
+                    "rationale": "Connects the shipped change to a user benefit.",
+                    "evidenceIds": ["event.change.1", "event.change.2"],
+                }
+            ]
+        },
     )
     app = cast(FastAPI, client.app)
-    app.state.generation_provider = provider
-    app.state.generation_model = "fake-v1"
+    app.state.llm_execution_service = llm
     payload = {"angle": "user_benefit", "idempotencyKey": "draft-angle:test-1"}
     url = f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/regenerate-angle"
 
@@ -919,7 +941,7 @@ def test_angle_regeneration_is_idempotent_persisted_and_requires_reapproval(
     assert first.json()["status"] == "pending"
     assert first.json()["approvedAt"] is None
     assert first.json()["generationRunId"] == replay.json()["generationRunId"]
-    assert provider.call_count == 1
+    assert len(provider.requests) == 1
     assert hidden.status_code == 404
 
     async def regeneration_state() -> tuple[int, int, int, str | None]:
@@ -1064,6 +1086,6 @@ def test_regeneration_rejects_disabled_or_unsafe_event_context(
     event: NormalizedEvent, context: object, repo_private: bool, code: str
 ) -> None:
     with pytest.raises(ConflictError) as error:
-        _ensure_allowed(event, context, repo_private)
+        ensure_regeneration_allowed(event, cast(EffectiveGenerationContext, context), repo_private)
 
     assert error.value.code == code

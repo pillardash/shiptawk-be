@@ -1,7 +1,13 @@
 from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 
 from app.db.base import Base
-from app.domains.legacy import models as legacy_models  # noqa: F401
+from app.modules.achievement_digests import models as achievement_digest_models  # noqa: F401
+from app.modules.drafts import models as draft_models  # noqa: F401
+from app.modules.integrations import models as integration_models  # noqa: F401
+from app.modules.llm import models as llm_models  # noqa: F401
+from app.modules.operator import models as operator_models  # noqa: F401
+from app.modules.products import models as product_models  # noqa: F401
+from app.modules.repos import models as repos_models  # noqa: F401
 
 
 def test_tenant_parent_child_constraints_are_composite() -> None:
@@ -16,10 +22,26 @@ def test_tenant_parent_child_constraints_are_composite() -> None:
             "generation_run_id",
             "selected_candidate_id",
             "normalized_event_id",
+            "prepared_asset_id",
+            "prepared_asset_revision",
         },
         "product_repositories": {"product_id", "repo_id"},
         "achievement_digest_feedback": {"digest_id"},
         "repo_changelog_entries": {"repo_id", "normalized_event_id"},
+        "website_crawl_runs": {"product_id", "source_id"},
+        "website_pages": {"product_id", "source_id", "first_discovered_run_id"},
+        "website_crawl_results": {"product_id", "source_id", "crawl_run_id", "page_id"},
+        "website_capability_mappings": {
+            "product_id",
+            "source_id",
+            "crawl_run_id",
+            "page_id",
+        },
+        "operator_run_snapshots": {"product_id", "operator_run_id"},
+        "opportunity_evaluations": {"product_id", "operator_run_id", "accepted_opportunity_id"},
+        "opportunity_evidence": {"product_id", "evaluation_id", "opportunity_id"},
+        "opportunity_feedback": {"product_id", "opportunity_id", "evaluation_id"},
+        "opportunity_status_events": {"product_id", "opportunity_id", "feedback_id"},
     }
 
     for table_name, child_ids in expected.items():
@@ -50,6 +72,17 @@ def test_tenant_parents_expose_composite_candidate_keys() -> None:
         "drafts",
         "achievement_digests",
         "repo_changelog_entries",
+        "website_sources",
+        "website_crawl_runs",
+        "website_pages",
+        "website_crawl_results",
+        "operator_runs",
+        "operator_run_snapshots",
+        "opportunities",
+        "opportunity_evaluations",
+        "opportunity_evidence",
+        "opportunity_feedback",
+        "opportunity_status_events",
     ):
         assert any(
             isinstance(constraint, UniqueConstraint)

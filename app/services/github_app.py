@@ -65,11 +65,18 @@ class HttpGitHubAppProvider:
         private_key: str,
         timeout_seconds: float = 10.0,
         http_transport: httpx.AsyncBaseTransport | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
+        if http_transport is not None and http_client is not None:
+            raise ValueError("Provide either http_transport or http_client, not both.")
         self.app_id = app_id
         self.private_key = private_key
         self.timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 5.0))
-        self.http_transport = http_transport
+        self._http_client = http_client or httpx.AsyncClient(transport=http_transport)
+
+    @property
+    def http_client(self) -> httpx.AsyncClient:
+        return self._http_client
 
     def _app_jwt(self) -> str:
         now = datetime.now(UTC)
@@ -87,20 +94,20 @@ class HttpGitHubAppProvider:
         self, method: str, path: str, *, bearer: str, json: dict[str, object] | None = None
     ) -> object:
         try:
-            async with httpx.AsyncClient(
-                base_url=self.api_base_url,
+            response = await self._http_client.request(
+                method,
+                f"{self.api_base_url}{path}",
                 timeout=self.timeout,
-                transport=self.http_transport,
                 headers={
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {bearer}",
                     "User-Agent": "Shiptawk",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
-            ) as client:
-                response = await client.request(method, path, json=json)
-                response.raise_for_status()
-                return response.json()
+                json=json,
+            )
+            response.raise_for_status()
+            return response.json()
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             raise GitHubAppError("GitHub App is temporarily unavailable.") from exc
 

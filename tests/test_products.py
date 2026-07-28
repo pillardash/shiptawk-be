@@ -12,22 +12,76 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.auth.models import AuthSession
-from app.domains.generation.fake_provider import DeterministicGenerationProvider
-from app.domains.generation.models import GenerationTelemetry, ProviderGenerationResult
-from app.domains.legacy.models import generation_runs, product_repositories, repos
-from app.domains.products.generation import (
+from app.main import create_app
+from app.modules.identity.models.oauth import AuthSession
+from app.modules.identity.models.users import User
+from app.modules.llm.models import generation_runs
+from app.modules.llm.policies.llm_route_policy import (
+    LLMModelRegistration,
+    LLMRoutePlan,
+    LLMRoutePolicy,
+    LLMRouteStep,
+    ModelPricing,
+)
+from app.modules.llm.providers.fake.fake_llm_provider import FakeLLMProvider
+from app.modules.llm.providers.generation_result import (
+    LLMGenerationResult,
+    LLMGenerationTelemetry,
+    LLMUsage,
+)
+from app.modules.llm.providers.provider_registry import LLMProviderRegistry
+from app.modules.llm.services.llm_execution_service import LLMExecutionService
+from app.modules.products.models import Product, product_repositories
+from app.modules.products.repositories.product_repository import get_product_for_workspace
+from app.modules.products.schemas.product_schema import (
+    ProductContextGeneratedOutput,
+    ProductContextGenerationRequest,
+)
+from app.modules.products.services.product_generation_service import (
     _metadata,
     _response,
     _saved_output,
     generate_product_context,
 )
-from app.domains.products.models import Product
-from app.domains.products.repository import get_product_for_workspace
-from app.domains.products.schemas import ProductContextGenerationRequest
-from app.domains.users.models import User
-from app.domains.workspaces.models import Workspace, WorkspaceMembership, WorkspaceRole
-from app.main import create_app
+from app.modules.repos.models import repos
+from app.modules.workspaces.enums import WorkspaceRole
+from app.modules.workspaces.models import Workspace, WorkspaceMembership
+
+
+def product_llm_service(
+    sessions: async_sessionmaker[AsyncSession], output: dict[str, object]
+) -> tuple[LLMExecutionService, FakeLLMProvider]:
+    provider = FakeLLMProvider(
+        LLMGenerationResult(
+            output=output,
+            telemetry=LLMGenerationTelemetry(
+                provider="fake",
+                model="fake-v1",
+                latency_ms=7,
+                usage=LLMUsage(input_tokens=20, output_tokens=40, total_tokens=60),
+                correlation_id="context-correlation",
+            ),
+        )
+    )
+    registration = LLMModelRegistration(
+        name="fake-product-context",
+        provider="fake",
+        model="fake-v1",
+        capabilities={"structured_output"},
+        pricing=ModelPricing(input_per_million=0, output_per_million=0),
+        pricing_version="test",
+    )
+    routes = LLMRoutePolicy(
+        {registration.name: registration},
+        {
+            "product-context": LLMRoutePlan(
+                name="product-context",
+                steps=(LLMRouteStep(model=registration.name),),
+                max_attempts=1,
+            )
+        },
+    )
+    return LLMExecutionService(sessions, LLMProviderRegistry({"fake": provider}), routes), provider
 
 
 @pytest.fixture
@@ -687,40 +741,28 @@ def test_product_context_generation_is_tenant_scoped_idempotent_and_persisted(
     client, sessions = product_client
     assert client.portal is not None
     user, workspace, other_workspace, product = client.portal.call(seed_product, sessions)
-    provider = DeterministicGenerationProvider(
-        result=ProviderGenerationResult(
-            output={
-                "name": "Shiptawk",
-                "description": "An evidence-backed marketing operator for startup teams.",
-                "targetAudience": "Technical startup teams",
-                "messagingAngle": "Turn verified product progress into marketing action.",
-                "toneOverride": "technical",
-                "safePublicBoundaries": ["Public releases only"],
-                "primaryCustomerPain": "Marketing work is fragmented",
-                "desiredOutcome": "A consistent evidence-backed operating loop",
-                "positioningStatement": "Operate startup marketing with evidence",
-                "proofPoints": ["Every claim links to evidence"],
-                "customerUseCases": ["Release marketing"],
-                "contentGoal": "awareness",
-                "ctaPreference": "Review the weekly plan",
-                "founderStoryAngle": "Built for technical founders",
-                "confidence": 86,
-            },
-            telemetry=GenerationTelemetry(
-                provider="deterministic",
-                model="fake-v1",
-                latency_ms=7,
-                input_tokens=20,
-                output_tokens=40,
-                total_tokens=60,
-                cost_estimate_usd=0,
-                correlation_id="context-correlation",
-            ),
-        )
+    llm, provider = product_llm_service(
+        sessions,
+        {
+            "name": "Shiptawk",
+            "description": "An evidence-backed marketing operator for startup teams.",
+            "targetAudience": "Technical startup teams",
+            "messagingAngle": "Turn verified product progress into marketing action.",
+            "toneOverride": "technical",
+            "safePublicBoundaries": ["Public releases only"],
+            "primaryCustomerPain": "Marketing work is fragmented",
+            "desiredOutcome": "A consistent evidence-backed operating loop",
+            "positioningStatement": "Operate startup marketing with evidence",
+            "proofPoints": ["Every claim links to evidence"],
+            "customerUseCases": ["Release marketing"],
+            "contentGoal": "awareness",
+            "ctaPreference": "Review the weekly plan",
+            "founderStoryAngle": "Built for technical founders",
+            "confidence": 86,
+        },
     )
     app = cast(FastAPI, client.app)
-    app.state.generation_provider = provider
-    app.state.generation_model = "fake-v1"
+    app.state.llm_execution_service = llm
     payload = {
         "websiteUrl": "https://example.com",
         "force": True,
@@ -749,10 +791,15 @@ def test_product_context_generation_is_tenant_scoped_idempotent_and_persisted(
     assert first.json()["draft"]["description"].startswith("An evidence-backed")
     assert first.json()["draft"]["blockedTerms"] == "secret"
     assert first.json()["confidence"] == 86
-    assert provider.call_count == 1
+    assert len(provider.requests) == 1
     assert hidden.status_code == 404
     assert hidden.json()["code"] == "product_not_found"
-    assert "secret" not in provider.requests[0].input_text
+    prompt = " ".join(message.content for message in provider.requests[0].messages)
+    assert "secret" not in prompt
+    assert "private roadmap" not in prompt
+    assert provider.requests[0].output_json_schema == (
+        ProductContextGeneratedOutput.model_json_schema(by_alias=True)
+    )
 
     async def persisted_run() -> dict[str, object]:
         async with sessions() as db:
@@ -773,7 +820,7 @@ def test_product_context_generation_is_tenant_scoped_idempotent_and_persisted(
     run = client.portal.call(persisted_run)
     assert run["status"] == "completed"
     assert run["repo_id"] is None
-    assert run["provider"] == "deterministic"
+    assert run["provider"] == "fake"
     assert run["model"] == "fake-v1"
     assert run["system_prompt"] == "[not persisted]"
     provider_parameters = cast(dict[str, object], run["provider_parameters"])
@@ -810,24 +857,30 @@ def test_saved_product_context_uses_fallbacks_and_marks_low_confidence_for_revie
 
 
 def test_generation_metadata_keeps_telemetry_without_prompt_content() -> None:
-    telemetry = GenerationTelemetry(
+    execution_id = uuid4()
+    telemetry = LLMGenerationTelemetry(
         provider="deterministic",
         model="fake-v1",
         latency_ms=12,
-        input_tokens=20,
-        output_tokens=30,
-        total_tokens=50,
-        cost_estimate_usd=0.01,
+        usage=LLMUsage(input_tokens=20, output_tokens=30, total_tokens=50),
+        estimated_cost=0.01,
         correlation_id="product-context:correlation",
     )
 
-    metadata = _metadata(telemetry)
+    metadata = _metadata(telemetry, execution_id)
 
     assert metadata == {
         "requestParameters": {"temperature": 0},
         "promptVersion": "product-context.v1",
         "correlationId": "product-context:correlation",
-        "usage": {"inputTokens": 20, "outputTokens": 30, "totalTokens": 50},
+        "llmExecutionId": str(execution_id),
+        "usage": {
+            "input_tokens": 20,
+            "output_tokens": 30,
+            "total_tokens": 50,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        },
         "costEstimateUsd": 0.01,
         "failureCategory": None,
     }
@@ -839,46 +892,35 @@ async def test_product_context_service_persists_and_reuses_a_deterministic_gener
     client, sessions = product_client
     assert client.portal is not None
     user, workspace, _, product = client.portal.call(seed_product, sessions)
-    provider = DeterministicGenerationProvider(
-        result=ProviderGenerationResult(
-            output={
-                "name": "Shiptawk",
-                "description": "Evidence-backed marketing for product teams.",
-                "targetAudience": "Product teams",
-                "messagingAngle": "Turn releases into reviewed marketing.",
-                "toneOverride": "technical",
-                "safePublicBoundaries": ["Public releases"],
-                "primaryCustomerPain": "Marketing is fragmented",
-                "desiredOutcome": "Consistent publishing",
-                "positioningStatement": "Evidence-backed marketing operator",
-                "proofPoints": ["Claims link to evidence"],
-                "customerUseCases": ["Release marketing"],
-                "contentGoal": "awareness",
-                "ctaPreference": "Review the plan",
-                "founderStoryAngle": "Built by a technical founder",
-                "confidence": 80,
-            },
-            telemetry=GenerationTelemetry(
-                provider="deterministic",
-                model="fake-v1",
-                latency_ms=1,
-                correlation_id="product-context-test",
-            ),
-        )
+    llm, provider = product_llm_service(
+        sessions,
+        {
+            "name": "Shiptawk",
+            "description": "Evidence-backed marketing for product teams.",
+            "targetAudience": "Product teams",
+            "messagingAngle": "Turn releases into reviewed marketing.",
+            "toneOverride": "technical",
+            "safePublicBoundaries": ["Public releases"],
+            "primaryCustomerPain": "Marketing is fragmented",
+            "desiredOutcome": "Consistent publishing",
+            "positioningStatement": "Evidence-backed marketing operator",
+            "proofPoints": ["Claims link to evidence"],
+            "customerUseCases": ["Release marketing"],
+            "contentGoal": "awareness",
+            "ctaPreference": "Review the plan",
+            "founderStoryAngle": "Built by a technical founder",
+            "confidence": 80,
+        },
     )
     payload = ProductContextGenerationRequest(
         website_url="https://example.com", force=True, idempotency_key="service-test"
     )
 
     async with sessions() as db:
-        first = await generate_product_context(
-            db, workspace.id, product.id, user.id, payload, provider, "fake-v1"
-        )
-        second = await generate_product_context(
-            db, workspace.id, product.id, user.id, payload, provider, "fake-v1"
-        )
+        first = await generate_product_context(db, workspace.id, product.id, user.id, payload, llm)
+        second = await generate_product_context(db, workspace.id, product.id, user.id, payload, llm)
 
     assert first == second
     assert first.draft.description == "Evidence-backed marketing for product teams."
     assert first.needs_review is False
-    assert provider.call_count == 1
+    assert len(provider.requests) == 1

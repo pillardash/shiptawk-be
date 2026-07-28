@@ -11,10 +11,10 @@ from app.core.exception_handlers import register_exception_handlers
 from app.core.security import create_access_token
 from app.db.base import Base
 from app.db.session import get_db
-from app.domains.users.models import User
-from app.domains.users.router import router as user_settings_router
-from app.domains.users.schemas import UserGenerationSettingsUpdate
-from app.domains.users.service import update_generation_settings
+from app.modules.identity.api.router import router as user_settings_router
+from app.modules.identity.models.users import User
+from app.modules.identity.schemas.users import UserGenerationSettingsUpdate
+from app.modules.identity.services.users import update_generation_settings
 
 VOICE_PROFILE = {
     "toneModes": ["technical", "direct"],
