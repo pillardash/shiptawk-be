@@ -1,5 +1,11 @@
 from datetime import date
 
+from app.modules.analytics.schemas.product_event_schema import (
+    BrowserProductEventCommand,
+    BrowserProductEventName,
+    ProductEventName,
+    ProductEventReceipt,
+)
 from app.shared.schemas import ApiSchema
 
 
@@ -29,5 +35,9 @@ __all__ = [
     "AnalyticsActivityResponse",
     "AnalyticsRate",
     "AnalyticsSummaryResponse",
+    "BrowserProductEventCommand",
+    "BrowserProductEventName",
+    "ProductEventName",
+    "ProductEventReceipt",
     "StatusTimelinePoint",
 ]

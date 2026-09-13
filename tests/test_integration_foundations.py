@@ -105,14 +105,14 @@ async def test_oauth_transaction_roundtrip_preserves_product_subject_binding(
     created = await service.create(
         integration_db,
         binding=expected,
-        return_path="/products/current?tab=integrations",
+        return_path="/users/products/current?tab=integrations",
         redirect_uri="https://api.example.test/oauth/callback",
     )
     consumed = await service.consume(integration_db, binding=expected, state=created.state)
 
     assert created.code_verifier
     assert consumed.code_verifier == created.code_verifier
-    assert consumed.return_path == "/products/current?tab=integrations"
+    assert consumed.return_path == "/users/products/current?tab=integrations"
     assert consumed.redirect_uri == "https://api.example.test/oauth/callback"
     persisted = await integration_db.scalar(select(IntegrationOAuthTransaction))
     assert persisted is not None
@@ -134,7 +134,7 @@ async def test_oauth_transaction_rejects_wrong_binding_without_consuming(
     created = await service.create(
         integration_db,
         binding=expected,
-        return_path="/settings",
+        return_path="/users/settings",
         redirect_uri="https://api.example.test/oauth/callback",
     )
     wrong = with_wrong_binding(expected, field)
@@ -155,7 +155,7 @@ async def test_oauth_transaction_is_atomic_one_time_consumption(
     created = await service.create(
         integration_db,
         binding=expected,
-        return_path="/settings",
+        return_path="/users/settings",
         redirect_uri="https://api.example.test/oauth/callback",
     )
 
@@ -174,7 +174,7 @@ async def test_global_oauth_consume_returns_persisted_binding_and_is_actor_provi
     created = await service.create(
         integration_db,
         binding=expected,
-        return_path="/products/current?tab=search",
+        return_path="/users/products/current?tab=search",
         redirect_uri="https://api.example.test/integrations/search/example/callback",
     )
 
@@ -194,7 +194,7 @@ async def test_global_oauth_consume_returns_persisted_binding_and_is_actor_provi
     )
     assert consumed.binding == expected
     assert consumed.code_verifier == created.code_verifier
-    assert consumed.return_path == "/products/current?tab=search"
+    assert consumed.return_path == "/users/products/current?tab=search"
 
     with pytest.raises(BadRequestError, match="Invalid or expired OAuth state"):
         await service.consume_for_actor(
@@ -215,7 +215,7 @@ async def test_oauth_transaction_rejects_expired_state(integration_db: AsyncSess
     created = await service.create(
         integration_db,
         binding=expected,
-        return_path="/settings",
+        return_path="/users/settings",
         redirect_uri="https://api.example.test/oauth/callback",
     )
 

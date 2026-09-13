@@ -32,7 +32,8 @@ from app.modules.identity.services.users import (
     record_dashboard_view,
 )
 from app.modules.integrations.models import IntegrationConnection
-from app.modules.products.models import Product, product_repositories
+from app.modules.products.enums.product_profile_enum import ProductProfileStatus
+from app.modules.products.models import Product, ProductProfile, product_repositories
 from app.modules.repos.models import repos
 from app.modules.workspaces.enums import WorkspaceRole
 from app.modules.workspaces.models import Workspace, WorkspaceMembership
@@ -55,7 +56,7 @@ def user_client() -> Generator[tuple[TestClient, dict[str, UUID]], None, None]:
     trigger = FakeOnboardingGenerationTrigger()
     app = FastAPI()
     register_exception_handlers(app)
-    app.include_router(user_router, prefix="/api/v1")
+    app.include_router(user_router, prefix="/v1")
     app.state.onboarding_generation_trigger = trigger
 
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -142,7 +143,7 @@ def test_profile_exposes_only_safe_current_user_identity(
     client, ids = user_client
 
     response = client.get(
-        "/api/v1/user/profile",
+        "/v1/user/profile",
         headers={"Authorization": f"Bearer {create_access_token(str(ids['user_id']))}"},
     )
 
@@ -184,7 +185,7 @@ def test_onboarding_status_is_scoped_to_the_current_workspace(
     assert client.portal is not None
     client.portal.call(seed_other_workspace_only)
 
-    response = client.get("/api/v1/user/onboarding")
+    response = client.get("/v1/user/onboarding")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -207,7 +208,7 @@ def test_completion_validates_workspace_setup_and_triggers_generation_once(
     sessions = cast(async_sessionmaker[AsyncSession], app.state.testing_sessions)
     trigger = cast(FakeOnboardingGenerationTrigger, app.state.onboarding_generation_trigger)
 
-    incomplete = client.post("/api/v1/user/onboarding/complete")
+    incomplete = client.post("/v1/user/onboarding/complete")
     assert incomplete.status_code == 409
     assert incomplete.json()["code"] == "onboarding_requirements_not_met"
 
@@ -249,12 +250,23 @@ def test_completion_validates_workspace_setup_and_triggers_generation_once(
                     repo_id=repo_id,
                 )
             )
+            db.add(
+                ProductProfile(
+                    workspace_id=ids["workspace_id"],
+                    product_id=product.id,
+                    status=ProductProfileStatus.approved,
+                    version=1,
+                    product_name="Shiptawk",
+                    approved_at=datetime.now(UTC),
+                    approved_by=ids["user_id"],
+                )
+            )
 
     assert client.portal is not None
     client.portal.call(seed_complete_setup)
 
-    first = client.post("/api/v1/user/onboarding/complete")
-    second = client.post("/api/v1/user/onboarding/complete")
+    first = client.post("/v1/user/onboarding/complete")
+    second = client.post("/v1/user/onboarding/complete")
 
     assert first.status_code == second.status_code == 200
     assert first.json()["completed"] is True
@@ -293,7 +305,7 @@ def test_dashboard_view_updates_only_the_current_user(
     app = cast(FastAPI, client.app)
     sessions = cast(async_sessionmaker[AsyncSession], app.state.testing_sessions)
 
-    response = client.post("/api/v1/user/dashboard-view")
+    response = client.post("/v1/user/dashboard-view")
 
     assert response.status_code == 204
 
@@ -365,12 +377,18 @@ def test_onboarding_status_reports_each_backend_owned_setup_stage(
                 )
             )
 
-    async def add_context_and_twitter() -> None:
+    async def add_approved_profile_and_twitter() -> None:
         async with sessions.begin() as db:
-            await db.execute(
-                update(Product)
-                .where(Product.id == product_id)
-                .values(description="A useful product", target_audience="Founders")
+            db.add(
+                ProductProfile(
+                    workspace_id=ids["workspace_id"],
+                    product_id=product_id,
+                    status=ProductProfileStatus.approved,
+                    version=1,
+                    product_name="Stage product",
+                    approved_at=datetime.now(UTC),
+                    approved_by=ids["user_id"],
+                )
             )
             db.add(
                 IntegrationConnection(
@@ -385,18 +403,89 @@ def test_onboarding_status_reports_each_backend_owned_setup_stage(
 
     assert client.portal is not None
     client.portal.call(add_github)
-    assert client.get("/api/v1/user/onboarding").json()["nextStep"] == "sync_repos"
+    assert client.get("/v1/user/onboarding").json()["nextStep"] == "sync_repos"
     client.portal.call(add_untracked_repo)
-    assert client.get("/api/v1/user/onboarding").json()["nextStep"] == "track_repos"
+    assert client.get("/v1/user/onboarding").json()["nextStep"] == "track_repos"
     client.portal.call(track_repo)
-    assert client.get("/api/v1/user/onboarding").json()["nextStep"] == "group_products"
+    assert client.get("/v1/user/onboarding").json()["nextStep"] == "group_products"
     client.portal.call(assign_repo_without_context)
-    assert client.get("/api/v1/user/onboarding").json()["nextStep"] == "product_context"
-    client.portal.call(add_context_and_twitter)
-    status = client.get("/api/v1/user/onboarding").json()
+    assert client.get("/v1/user/onboarding").json()["nextStep"] == "product_context"
+    client.portal.call(add_approved_profile_and_twitter)
+    status = client.get("/v1/user/onboarding").json()
     assert status["nextStep"] == "complete"
     assert status["usedProductsHaveContext"] is True
     assert status["twitterConnected"] is True
+
+
+def test_onboarding_requires_approved_profiles_for_all_used_products(
+    user_client: tuple[TestClient, dict[str, UUID]],
+) -> None:
+    client, ids = user_client
+    app = cast(FastAPI, client.app)
+    sessions = cast(async_sessionmaker[AsyncSession], app.state.testing_sessions)
+    product_id = uuid4()
+
+    async def seed_legacy_context_and_draft_profile() -> None:
+        async with sessions.begin() as db:
+            repo_id = uuid4()
+            db.add(
+                IntegrationConnection(
+                    workspace_id=ids["workspace_id"],
+                    provider="github_app",
+                    external_account_id="profile-gate",
+                    credentials_ciphertext="server-managed-github-app",
+                    credential_key_version="none",
+                    idempotency_key=f"github-app:{uuid4()}",
+                )
+            )
+            db.add(
+                Product(
+                    id=product_id,
+                    workspace_id=ids["workspace_id"],
+                    user_id=ids["user_id"],
+                    name="Legacy complete",
+                    description="Legacy description",
+                    target_audience="Legacy audience",
+                )
+            )
+            await db.execute(
+                insert(repos).values(
+                    id=repo_id,
+                    workspace_id=ids["workspace_id"],
+                    user_id=ids["user_id"],
+                    repo_name="profile-gate",
+                    repo_full_name="octo/profile-gate",
+                    is_tracked=True,
+                )
+            )
+            await db.execute(
+                insert(product_repositories).values(
+                    id=uuid4(),
+                    workspace_id=ids["workspace_id"],
+                    product_id=product_id,
+                    repo_id=repo_id,
+                )
+            )
+            db.add(
+                ProductProfile(
+                    workspace_id=ids["workspace_id"],
+                    product_id=product_id,
+                    status=ProductProfileStatus.draft,
+                    product_name="Draft only",
+                )
+            )
+
+    assert client.portal is not None
+    client.portal.call(seed_legacy_context_and_draft_profile)
+
+    status = client.get("/v1/user/onboarding")
+    completion = client.post("/v1/user/onboarding/complete")
+
+    assert status.status_code == 200
+    assert status.json()["usedProductsHaveContext"] is False
+    assert status.json()["nextStep"] == "product_context"
+    assert completion.status_code == 409
+    assert completion.json()["code"] == "approved_product_profile_required"
 
 
 @pytest.mark.asyncio

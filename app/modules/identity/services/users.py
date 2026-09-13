@@ -21,7 +21,8 @@ from app.modules.identity.schemas.users import (
     UserVoiceProfile,
 )
 from app.modules.integrations.models import IntegrationConnection
-from app.modules.products.models import Product, product_repositories
+from app.modules.products.enums.product_profile_enum import ProductProfileStatus
+from app.modules.products.models import ProductProfile, product_repositories
 from app.modules.repos.models import repos
 from app.modules.workspaces.models import Workspace
 from app.modules.workspaces.repositories import has_active_membership
@@ -174,12 +175,15 @@ async def get_onboarding_status(
     )
     mapped_repo_ids = {row.repo_id for row in mapped_rows}
     used_product_ids = {row.product_id for row in mapped_rows}
-    context_products = (
+    approved_profile_product_ids = set(
         (
             await db.scalars(
-                select(Product).where(
-                    Product.workspace_id == workspace_id,
-                    Product.id.in_(used_product_ids),
+                select(ProductProfile.product_id).where(
+                    ProductProfile.workspace_id == workspace_id,
+                    ProductProfile.product_id.in_(used_product_ids),
+                    ProductProfile.status == ProductProfileStatus.approved,
+                    ProductProfile.version.is_not(None),
+                    ProductProfile.deleted_at.is_(None),
                 )
             )
         ).all()
@@ -187,14 +191,7 @@ async def get_onboarding_status(
         else []
     )
     used_products_have_context = (
-        bool(used_product_ids)
-        and len(context_products) == len(used_product_ids)
-        and all(
-            bool(product.name.strip())
-            and bool(product.description and product.description.strip())
-            and bool(product.target_audience and product.target_audience.strip())
-            for product in context_products
-        )
+        bool(used_product_ids) and approved_profile_product_ids == used_product_ids
     )
     twitter_connected = bool(
         await db.scalar(
@@ -252,6 +249,11 @@ async def complete_onboarding(
         raise ConflictError(
             "GitHub, a tracked repository, and product assignment are required.",
             code="onboarding_requirements_not_met",
+        )
+    if not status.used_products_have_context:
+        raise ConflictError(
+            "Every product used by a tracked repository requires an approved product profile.",
+            code="approved_product_profile_required",
         )
     newly_completed = await db.scalar(
         update(Workspace)

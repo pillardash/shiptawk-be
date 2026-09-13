@@ -67,6 +67,8 @@
 
 ## Verification
 
+- Batch verification after a coherent implementation slice. Do not run tests after every individual service, schema, or route change unless diagnosing a specific failure.
+
 Run after backend changes:
 
 ```bash

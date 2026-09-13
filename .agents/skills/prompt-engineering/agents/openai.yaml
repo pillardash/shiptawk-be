@@ -1,0 +1,3 @@
+interface:
+  display_name: Prompt Engineering Codex
+  short_description: Build better staged prompts for Codex coding workflows.

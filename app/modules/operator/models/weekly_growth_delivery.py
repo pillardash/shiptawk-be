@@ -1,7 +1,16 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import JSON, DateTime, ForeignKeyConstraint, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +36,10 @@ class WeeklyGrowthDelivery(UuidPrimaryKeyMixin, Base):
             ["marketing_plans.workspace_id", "marketing_plans.product_id", "marketing_plans.id"],
             name="fk_weekly_growth_deliveries_plan_tenant",
             ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "status IN ('pending','delivered','failed','unknown_outcome','suppressed')",
+            name="weekly_growth_deliveries_status",
         ),
     )
 

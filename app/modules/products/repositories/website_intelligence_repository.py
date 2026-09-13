@@ -113,6 +113,39 @@ async def latest_crawl_run(
     ).first()
 
 
+async def latest_attempted_crawl_run(
+    db: AsyncSession, workspace_id: UUID, product_id: UUID
+) -> WebsiteCrawlRun | None:
+    return (
+        await db.scalars(
+            select(WebsiteCrawlRun)
+            .where(
+                WebsiteCrawlRun.workspace_id == workspace_id,
+                WebsiteCrawlRun.product_id == product_id,
+            )
+            .order_by(WebsiteCrawlRun.created_at.desc(), WebsiteCrawlRun.id.desc())
+            .limit(1)
+        )
+    ).first()
+
+
+async def latest_successful_crawl_run(
+    db: AsyncSession, workspace_id: UUID, product_id: UUID
+) -> WebsiteCrawlRun | None:
+    return (
+        await db.scalars(
+            select(WebsiteCrawlRun)
+            .where(
+                WebsiteCrawlRun.workspace_id == workspace_id,
+                WebsiteCrawlRun.product_id == product_id,
+                WebsiteCrawlRun.status == WebsiteCrawlRunStatus.succeeded,
+            )
+            .order_by(WebsiteCrawlRun.created_at.desc(), WebsiteCrawlRun.id.desc())
+            .limit(1)
+        )
+    ).first()
+
+
 async def list_pages(
     db: AsyncSession, workspace_id: UUID, product_id: UUID, *, limit: int, offset: int
 ) -> list[WebsitePage]:
@@ -131,9 +164,15 @@ async def list_pages(
 
 
 async def list_crawl_observations(
-    db: AsyncSession, workspace_id: UUID, product_id: UUID, crawl_run_id: UUID
+    db: AsyncSession,
+    workspace_id: UUID,
+    product_id: UUID,
+    crawl_run_id: UUID,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[tuple[WebsitePage, WebsiteCrawlResult]]:
-    rows = await db.execute(
+    statement = (
         select(WebsitePage, WebsiteCrawlResult)
         .join(
             WebsiteCrawlResult,
@@ -148,6 +187,9 @@ async def list_crawl_observations(
         )
         .order_by(WebsitePage.canonical_url.asc(), WebsitePage.id.asc())
     )
+    if limit is not None:
+        statement = statement.limit(limit).offset(offset)
+    rows = await db.execute(statement)
     return [(page, result) for page, result in rows.tuples()]
 
 

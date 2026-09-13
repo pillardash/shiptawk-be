@@ -2,7 +2,11 @@ import logging
 
 from app.core.config import get_settings
 from app.services.email.base import EmailAddress, EmailContent, EmailMessage, create_email_service
-from app.services.email.templates import email_verification_template, password_reset_template
+from app.services.email.templates import (
+    email_verification_template,
+    invite_user_template,
+    password_reset_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +22,8 @@ def send_verification_email(*, recipient_email: str, verification_url: str) -> N
 
 
 def send_invite_email(*, recipient_email: str, invite_url: str) -> None:
-    logger.info("Invite email task received")
+    content = invite_user_template(invite_url)
+    send_templated_email(recipient_email=recipient_email, content=content)
 
 
 def send_system_notification_email(*, recipient_email: str, subject: str) -> None:

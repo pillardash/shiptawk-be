@@ -4,8 +4,10 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.products.enums.product_profile_enum import (
     ProductProfileAuditAction,
+    ProductProfileReadinessBlockingReason,
     ProductProfileStatus,
 )
 from app.modules.products.models import ProductProfile, ProductProfileAuditEvent
@@ -29,6 +31,7 @@ from app.modules.products.repositories.product_repository import (
 from app.modules.products.schemas.product_profile_schema import (
     ApprovedProductProfileContext,
     ProductProfileDraftUpdate,
+    ProductProfileReadinessResponse,
 )
 from app.modules.workspaces.services.access import require_active_workspace_role
 from app.shared.exceptions import (
@@ -55,6 +58,11 @@ CONTENT_FIELDS = (
     "restricted_language",
     "brand_voice_guidance",
 )
+
+
+def _public_field_name(value: str) -> str:
+    first, *rest = value.split("_")
+    return first + "".join(part.capitalize() for part in rest)
 
 
 def _values(payload: ProductProfileDraftUpdate) -> dict[str, object]:
@@ -106,6 +114,56 @@ async def read_product_profile(
     return await get_product_profile_state(db, workspace_id, product_id)
 
 
+def product_profile_readiness(
+    draft: ProductProfile | None,
+    approved: ProductProfile | None,
+    *,
+    operator_enabled: bool,
+    manual_enabled: bool,
+) -> ProductProfileReadinessResponse:
+    draft_score, missing = completeness(_profile_values(draft)) if draft else completeness({})
+    reasons: list[ProductProfileReadinessBlockingReason] = []
+    if approved is None or approved.version is None:
+        reasons.append(ProductProfileReadinessBlockingReason.approved_product_profile_required)
+    if not operator_enabled:
+        reasons.append(ProductProfileReadinessBlockingReason.operator_disabled)
+    if not manual_enabled:
+        reasons.append(ProductProfileReadinessBlockingReason.manual_runs_disabled)
+    profile_ready = approved is not None and approved.version is not None
+    return ProductProfileReadinessResponse(
+        draft_completeness_score=draft_score,
+        draft_missing_fields=[_public_field_name(field) for field in missing],
+        approved_profile_id=(
+            approved.id if approved is not None and approved.version is not None else None
+        ),
+        approved_profile_version=(
+            approved.version if approved is not None and approved.version is not None else None
+        ),
+        profile_ready=profile_ready,
+        operator_enabled=operator_enabled,
+        manual_run_available=profile_ready and operator_enabled and manual_enabled,
+        blocking_reasons=reasons,
+    )
+
+
+async def require_manual_run_ready(
+    db: AsyncSession,
+    workspace_id: UUID,
+    product_id: UUID,
+    *,
+    operator_enabled: bool | None = None,
+    manual_enabled: bool | None = None,
+) -> None:
+    _, approved = await get_product_profile_state(db, workspace_id, product_id)
+    if approved is None or approved.version is None:
+        raise ConflictError(
+            "An approved product profile is required before running the operator.",
+            code="approved_product_profile_required",
+        )
+    if operator_enabled is False or manual_enabled is False:
+        raise ConflictError("Manual operator runs are disabled.", code="manual_runs_disabled")
+
+
 async def save_draft(
     db: AsyncSession,
     workspace_id: UUID,
@@ -149,6 +207,16 @@ async def save_draft(
             raise ConflictError(
                 "The product profile changed. Reload and try again.",
                 code="product_profile_revision_conflict",
+                metadata={
+                    "resourceType": "product_profile",
+                    "requestedRevision": payload.expected_revision,
+                    "currentRevision": draft.draft_revision,
+                    "currentResourceId": str(draft.id),
+                    "revisionsHref": (
+                        f"/workspaces/{workspace_id}/products/{product_id}/product-profile/versions"
+                    ),
+                    "safeRecovery": "compare_or_reload",
+                },
             )
     values = _values(payload)
     for field, value in values.items():
@@ -193,6 +261,16 @@ async def approve_draft(
         raise ConflictError(
             "The product profile changed. Reload and try again.",
             code="product_profile_revision_conflict",
+            metadata={
+                "resourceType": "product_profile",
+                "requestedRevision": expected_revision,
+                "currentRevision": draft.draft_revision,
+                "currentResourceId": str(draft.id),
+                "revisionsHref": (
+                    f"/workspaces/{workspace_id}/products/{product_id}/product-profile/versions"
+                ),
+                "safeRecovery": "compare_or_reload",
+            },
         )
     score, missing = completeness(_profile_values(draft))
     draft.completeness_score = score
@@ -239,6 +317,17 @@ async def approve_draft(
                 changed_fields=[],
             )
         )
+    await write_product_event(
+        db,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        actor_id=user_id,
+        event_name="product_profile_approved",
+        idempotency_key=f"product-profile-approved:{draft.id}:{next_version}",
+        resource_type="product_profile",
+        resource_id=draft.id,
+        resource_revision=next_version,
+    )
     await _commit_profile_mutation(db)
     await db.refresh(draft)
     return draft

@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import pkce_s256_challenge
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.integrations.models import IntegrationConnection
 from app.modules.integrations.providers.credential_vault_provider import IntegrationCredentialVault
 from app.modules.integrations.repositories.integration_connection_repository import (
@@ -247,6 +248,16 @@ async def save_connection_and_properties(
         item.last_seen_at = now
         item.deleted_at = None
         item.updated_by = actor_id
+    await write_product_event(
+        db,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        actor_id=actor_id,
+        event_name="search_console_connected",
+        idempotency_key=f"search-console-connected:{connection.id}:{product_id}",
+        resource_type="integration_connection",
+        resource_id=connection.id,
+    )
     await db.commit()
     await db.refresh(connection)
     return connection
@@ -380,6 +391,16 @@ async def select_property(
     db.add(source)
     await db.flush()
     initial = await create_initial_sync(db, source=source, capabilities=capabilities)
+    await write_product_event(
+        db,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        actor_id=actor_id,
+        event_name="search_property_selected",
+        idempotency_key=f"search-property-selected:{source.id}",
+        resource_type="search_source",
+        resource_id=source.id,
+    )
     await db.commit()
     await db.refresh(source)
     await db.refresh(initial)

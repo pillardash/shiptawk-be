@@ -36,6 +36,8 @@ achievement_digests = Table(
     Column("subject", Text, nullable=False),
     Column("body", Text, nullable=False),
     Column("sent_at", DateTime(timezone=True)),
+    Column("delivery_status", String(20)),
+    Column("provider_delivery_id", String(255)),
     created_at(),
     Column("product_id", UUID(as_uuid=True), ForeignKey("products.id")),
     Column("digest_json", json_type, nullable=False, server_default=text("'{}'")),
@@ -49,6 +51,11 @@ achievement_digests = Table(
     CheckConstraint(
         "quality_score IS NULL OR quality_score BETWEEN 0 AND 100",
         name="achievement_digests_quality_score",
+    ),
+    CheckConstraint(
+        "delivery_status IS NULL OR delivery_status IN "
+        "('pending','delivered','failed','unknown_outcome','suppressed')",
+        name="achievement_digests_delivery_status",
     ),
 )
 add_tenant_parent_key(achievement_digests)

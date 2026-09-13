@@ -30,7 +30,7 @@ async def get_browser_session(request: Request, db: DbDep) -> tuple[User, UUID]:
         session_id = UUID(claims["sid"])
     except ValueError as exc:
         raise UnauthorizedError("Invalid browser session.", code="invalid_session") from exc
-    user, _, _, _ = await get_bound_session(db, user_id=user_id, session_id=session_id)
+    user, _, _, _, _ = await get_bound_session(db, user_id=user_id, session_id=session_id)
     return user, session_id
 
 

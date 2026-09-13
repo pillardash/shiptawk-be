@@ -12,6 +12,7 @@ from app.modules.products.schemas.website_intelligence_schema import (
     WebsiteHealthResponse,
     WebsitePageRelevanceResponse,
     WebsitePageResponse,
+    WebsiteReadinessResponse,
     WebsiteSourceResponse,
     WebsiteSourceWrite,
 )
@@ -24,6 +25,7 @@ from app.modules.products.services.website_intelligence_service import (
     read_pages,
     read_source,
     read_topic_relevance,
+    read_website_readiness,
     request_crawl,
     save_source,
 )
@@ -125,15 +127,31 @@ async def list_website_pages_endpoint(
     product_id: UUID,
     current_user: CurrentUserDep,
     db: DbDep,
+    crawl_run_id: Annotated[UUID | None, Query(alias="crawlRunId")] = None,
     limit: PageLimit = 50,
     offset: PageOffset = 0,
 ) -> list[WebsitePageResponse]:
     return [
-        WebsitePageResponse.model_validate(row)
+        row
         for row in await read_pages(
-            db, workspace_id, product_id, current_user.id, limit=limit, offset=offset
+            db,
+            workspace_id,
+            product_id,
+            current_user.id,
+            crawl_run_id=crawl_run_id,
+            limit=limit,
+            offset=offset,
         )
     ]
+
+
+@website_intelligence_router.get(
+    "/{product_id}/website/readiness", response_model=WebsiteReadinessResponse
+)
+async def get_website_readiness_endpoint(
+    workspace_id: UUID, product_id: UUID, current_user: CurrentUserDep, db: DbDep
+) -> WebsiteReadinessResponse:
+    return await read_website_readiness(db, workspace_id, product_id, current_user.id)
 
 
 @website_intelligence_router.get(

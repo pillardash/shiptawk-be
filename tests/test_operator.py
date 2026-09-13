@@ -6,7 +6,7 @@ from app.main import create_app
 def test_product_scoped_operator_api_exposes_phase_five_resources() -> None:
     app = create_app()
     paths = app.openapi()["paths"]
-    prefix = "/api/v1/workspaces/{workspace_id}/products/{product_id}"
+    prefix = "/v1/workspaces/{workspace_id}/products/{product_id}"
     assert set(paths[f"{prefix}/operator/runs"]) == {"get", "post"}
     assert set(paths[f"{prefix}/operator/runs/{{run_id}}/evaluations"]) == {"get"}
     assert set(paths[f"{prefix}/opportunities"]) == {"get"}
@@ -18,21 +18,21 @@ def test_product_scoped_operator_api_exposes_phase_five_resources() -> None:
     assert f"{prefix}/operator/plans" in paths
     assert f"{prefix}/operator/actions" in paths
     assert f"{prefix}/operator/assets/{{asset_id}}" in paths
-    assert "/api/v1/workspaces/{workspace_id}/operator/runs" not in paths
-    assert "/api/v1/workspaces/{workspace_id}/opportunities" not in paths
+    assert "/v1/workspaces/{workspace_id}/operator/runs" not in paths
+    assert "/v1/workspaces/{workspace_id}/opportunities" not in paths
 
 
 def test_removed_operator_routes_return_not_found() -> None:
     with TestClient(create_app()) as client:
         assert (
             client.get(
-                "/api/v1/workspaces/00000000-0000-0000-0000-000000000000/operator/runs"
+                "/v1/workspaces/00000000-0000-0000-0000-000000000000/operator/runs"
             ).status_code
             == 404
         )
         assert (
             client.get(
-                "/api/v1/workspaces/00000000-0000-0000-0000-000000000000/opportunities"
+                "/v1/workspaces/00000000-0000-0000-0000-000000000000/opportunities"
             ).status_code
             == 404
         )

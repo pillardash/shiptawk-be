@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator, Generator
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -8,12 +8,17 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import StaticPool, update
+from sqlalchemy import StaticPool, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
+from app.modules.analytics.models import ProductEvent
+from app.modules.analytics.services.product_event_service import (
+    EventScopeError,
+    write_product_event,
+)
 from app.modules.integrations.providers.github import (
     FakeGitHubAppProvider,
     GitHubAppError,
@@ -72,12 +77,10 @@ def github_app_client() -> Generator[tuple[TestClient, FakeGitHubAppProvider], N
     with TestClient(app) as client:
         assert client.portal is not None
         client.portal.call(create_tables)
-        authorize = client.get(
-            "/api/v1/auth/browser/oauth/github/authorize", follow_redirects=False
-        )
+        authorize = client.get("/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
         state = authorize.headers["location"].split("state=")[1].split("&")[0]
         callback = client.get(
-            "/api/v1/auth/browser/oauth/github/callback",
+            "/v1/auth/browser/oauth/github/callback",
             params={"code": "code", "state": state},
             follow_redirects=False,
         )
@@ -88,7 +91,7 @@ def github_app_client() -> Generator[tuple[TestClient, FakeGitHubAppProvider], N
 
 
 def workspace_id(client: TestClient) -> str:
-    return cast(str, client.get("/api/v1/auth/browser/session").json()["currentWorkspace"]["id"])
+    return cast(str, client.get("/v1/auth/browser/session").json()["currentWorkspace"]["id"])
 
 
 def mutation_headers(client: TestClient) -> dict[str, str]:
@@ -98,6 +101,18 @@ def mutation_headers(client: TestClient) -> dict[str, str]:
     }
 
 
+def product_events(client: TestClient) -> list[ProductEvent]:
+    app = cast(FastAPI, client.app)
+    sessions = cast(async_sessionmaker[AsyncSession], app.state.testing_session)
+
+    async def read_events() -> list[ProductEvent]:
+        async with sessions() as db:
+            return list(await db.scalars(select(ProductEvent).order_by(ProductEvent.occurred_at)))
+
+    assert client.portal is not None
+    return client.portal.call(read_events)
+
+
 def test_attach_sync_and_toggle_workspace_repository(
     github_app_client: tuple[TestClient, FakeGitHubAppProvider],
 ) -> None:
@@ -105,18 +120,18 @@ def test_attach_sync_and_toggle_workspace_repository(
     workspace = workspace_id(client)
 
     attached = client.post(
-        f"/api/v1/workspaces/{workspace}/github/installation",
+        f"/v1/workspaces/{workspace}/github/installation",
         json={"installationId": 42},
         headers=mutation_headers(client),
     )
     synced = client.post(
-        f"/api/v1/workspaces/{workspace}/repositories/sync",
+        f"/v1/workspaces/{workspace}/repositories/sync",
         headers=mutation_headers(client),
     )
-    listed = client.get(f"/api/v1/workspaces/{workspace}/repositories")
+    listed = client.get(f"/v1/workspaces/{workspace}/repositories")
     repo_id = listed.json()[0]["id"]
     tracked = client.patch(
-        f"/api/v1/workspaces/{workspace}/repositories/{repo_id}/tracking",
+        f"/v1/workspaces/{workspace}/repositories/{repo_id}/tracking",
         json={"isTracked": True},
         headers=mutation_headers(client),
     )
@@ -134,6 +149,14 @@ def test_attach_sync_and_toggle_workspace_repository(
     assert "token" not in str(attached.json()).lower()
     assert github.verify_calls == 1
     assert github.list_calls == 1
+    events = product_events(client)
+    assert [event.event_name for event in events] == [
+        "github_installation_attached",
+        "repository_monitoring_enabled",
+    ]
+    assert all(event.product_id is None and event.source == "server" for event in events)
+    assert events[1].resource_id == UUID(repo_id)
+    assert events[1].resource_revision == 1
 
 
 def test_repository_detail_branch_and_changelog_settings(
@@ -143,25 +166,25 @@ def test_repository_detail_branch_and_changelog_settings(
     workspace = workspace_id(client)
     headers = mutation_headers(client)
     client.post(
-        f"/api/v1/workspaces/{workspace}/github/installation",
+        f"/v1/workspaces/{workspace}/github/installation",
         json={"installationId": 42},
         headers=headers,
     )
-    repo_id = client.post(
-        f"/api/v1/workspaces/{workspace}/repositories/sync", headers=headers
-    ).json()[0]["id"]
+    repo_id = client.post(f"/v1/workspaces/{workspace}/repositories/sync", headers=headers).json()[
+        0
+    ]["id"]
 
     branch = client.patch(
-        f"/api/v1/workspaces/{workspace}/repositories/{repo_id}",
+        f"/v1/workspaces/{workspace}/repositories/{repo_id}",
         json={"trackedBranch": "release"},
         headers=headers,
     )
     digest = client.patch(
-        f"/api/v1/workspaces/{workspace}/repositories/{repo_id}/changelog-digest-settings",
+        f"/v1/workspaces/{workspace}/repositories/{repo_id}/changelog-digest-settings",
         json={"enabled": True, "frequency": "monthly"},
         headers=headers,
     )
-    detail = client.get(f"/api/v1/workspaces/{workspace}/repositories/{repo_id}")
+    detail = client.get(f"/v1/workspaces/{workspace}/repositories/{repo_id}")
 
     assert branch.status_code == 200
     assert branch.json()["trackedBranch"] == "release"
@@ -181,30 +204,28 @@ def test_repository_detail_mutations_validate_and_enforce_workspace_scope(
     workspace = workspace_id(client)
     headers = mutation_headers(client)
     client.post(
-        f"/api/v1/workspaces/{workspace}/github/installation",
+        f"/v1/workspaces/{workspace}/github/installation",
         json={"installationId": 42},
         headers=headers,
     )
-    repo_id = client.post(
-        f"/api/v1/workspaces/{workspace}/repositories/sync", headers=headers
-    ).json()[0]["id"]
+    repo_id = client.post(f"/v1/workspaces/{workspace}/repositories/sync", headers=headers).json()[
+        0
+    ]["id"]
     other_workspace = "00000000-0000-0000-0000-000000000001"
 
     invalid_branch = client.patch(
-        f"/api/v1/workspaces/{workspace}/repositories/{repo_id}",
+        f"/v1/workspaces/{workspace}/repositories/{repo_id}",
         json={"trackedBranch": " "},
         headers=headers,
     )
     invalid_frequency = client.patch(
-        f"/api/v1/workspaces/{workspace}/repositories/{repo_id}/changelog-digest-settings",
+        f"/v1/workspaces/{workspace}/repositories/{repo_id}/changelog-digest-settings",
         json={"enabled": True, "frequency": "daily"},
         headers=headers,
     )
-    cross_workspace_read = client.get(
-        f"/api/v1/workspaces/{other_workspace}/repositories/{repo_id}"
-    )
+    cross_workspace_read = client.get(f"/v1/workspaces/{other_workspace}/repositories/{repo_id}")
     cross_workspace_write = client.patch(
-        f"/api/v1/workspaces/{other_workspace}/repositories/{repo_id}",
+        f"/v1/workspaces/{other_workspace}/repositories/{repo_id}",
         json={"trackedBranch": "main"},
         headers=headers,
     )
@@ -225,7 +246,7 @@ def test_attach_and_sync_are_idempotent(
     for _ in range(2):
         assert (
             client.post(
-                f"/api/v1/workspaces/{workspace}/github/installation",
+                f"/v1/workspaces/{workspace}/github/installation",
                 json={"installationId": 42},
                 headers=headers,
             ).status_code
@@ -233,12 +254,127 @@ def test_attach_and_sync_are_idempotent(
         )
         assert (
             client.post(
-                f"/api/v1/workspaces/{workspace}/repositories/sync", headers=headers
+                f"/v1/workspaces/{workspace}/repositories/sync", headers=headers
             ).status_code
             == 200
         )
 
-    assert len(client.get(f"/api/v1/workspaces/{workspace}/repositories").json()) == 1
+    assert len(client.get(f"/v1/workspaces/{workspace}/repositories").json()) == 1
+    assert [event.event_name for event in product_events(client)] == [
+        "github_installation_attached"
+    ]
+
+
+def test_monitoring_events_only_cover_real_enable_transitions(
+    github_app_client: tuple[TestClient, FakeGitHubAppProvider],
+) -> None:
+    client, _ = github_app_client
+    workspace = workspace_id(client)
+    headers = mutation_headers(client)
+    client.post(
+        f"/v1/workspaces/{workspace}/github/installation",
+        json={"installationId": 42},
+        headers=headers,
+    )
+    repo_id = client.post(f"/v1/workspaces/{workspace}/repositories/sync", headers=headers).json()[
+        0
+    ]["id"]
+
+    for enabled in (True, True, False, True):
+        response = client.patch(
+            f"/v1/workspaces/{workspace}/repositories/{repo_id}/tracking",
+            json={"isTracked": enabled},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+    tracking_events = [
+        event
+        for event in product_events(client)
+        if event.event_name == "repository_monitoring_enabled"
+    ]
+    assert [event.resource_revision for event in tracking_events] == [1, 2]
+    assert len({event.idempotency_key for event in tracking_events}) == 2
+
+
+def test_monitoring_event_rolls_back_with_failed_transition_commit(
+    github_app_client: tuple[TestClient, FakeGitHubAppProvider],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = github_app_client
+    workspace = workspace_id(client)
+    headers = mutation_headers(client)
+    client.post(
+        f"/v1/workspaces/{workspace}/github/installation",
+        json={"installationId": 42},
+        headers=headers,
+    )
+    repo_id = client.post(f"/v1/workspaces/{workspace}/repositories/sync", headers=headers).json()[
+        0
+    ]["id"]
+
+    async def fail_commit(_session: AsyncSession) -> None:
+        raise RuntimeError("commit failed")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(AsyncSession, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.patch(
+                f"/v1/workspaces/{workspace}/repositories/{repo_id}/tracking",
+                json={"isTracked": True},
+                headers=headers,
+            )
+
+    assert (
+        client.get(f"/v1/workspaces/{workspace}/repositories/{repo_id}").json()["isTracked"]
+        is False
+    )
+    assert not any(
+        event.event_name == "repository_monitoring_enabled" for event in product_events(client)
+    )
+
+
+def test_workspace_event_resource_is_hidden_across_workspaces(
+    github_app_client: tuple[TestClient, FakeGitHubAppProvider],
+) -> None:
+    client, _ = github_app_client
+    workspace = workspace_id(client)
+    headers = mutation_headers(client)
+    client.post(
+        f"/v1/workspaces/{workspace}/github/installation",
+        json={"installationId": 42},
+        headers=headers,
+    )
+    repo_id = UUID(
+        client.post(f"/v1/workspaces/{workspace}/repositories/sync", headers=headers).json()[0][
+            "id"
+        ]
+    )
+    client.patch(
+        f"/v1/workspaces/{workspace}/repositories/{repo_id}/tracking",
+        json={"isTracked": True},
+        headers=headers,
+    )
+    app = cast(FastAPI, client.app)
+    sessions = cast(async_sessionmaker[AsyncSession], app.state.testing_session)
+
+    async def write_cross_workspace_event() -> None:
+        async with sessions() as db:
+            await write_product_event(
+                db,
+                workspace_id=uuid4(),
+                product_id=None,
+                actor_id=None,
+                event_name="repository_monitoring_enabled",
+                idempotency_key="cross-workspace",
+                resource_type="repository",
+                resource_id=repo_id,
+                resource_revision=1,
+            )
+
+    assert client.portal is not None
+    with pytest.raises(EventScopeError, match="not found"):
+        client.portal.call(write_cross_workspace_event)
 
 
 @pytest.mark.parametrize("role", [WorkspaceRole.reviewer, WorkspaceRole.viewer])
@@ -249,14 +385,14 @@ def test_read_only_roles_cannot_sync_or_change_repository_tracking(
     workspace = workspace_id(client)
     headers = mutation_headers(client)
     client.post(
-        f"/api/v1/workspaces/{workspace}/github/installation",
+        f"/v1/workspaces/{workspace}/github/installation",
         json={"installationId": 42},
         headers=headers,
     )
-    repo_id = client.post(
-        f"/api/v1/workspaces/{workspace}/repositories/sync", headers=headers
-    ).json()[0]["id"]
-    session = client.get("/api/v1/auth/browser/session").json()
+    repo_id = client.post(f"/v1/workspaces/{workspace}/repositories/sync", headers=headers).json()[
+        0
+    ]["id"]
+    session = client.get("/v1/auth/browser/session").json()
     user_id = UUID(cast(str, session["user"]["id"]))
     app = cast(FastAPI, client.app)
     sessions = cast(async_sessionmaker[AsyncSession], app.state.testing_session)
@@ -274,9 +410,9 @@ def test_read_only_roles_cannot_sync_or_change_repository_tracking(
 
     assert client.portal is not None
     client.portal.call(set_read_only_role)
-    sync = client.post(f"/api/v1/workspaces/{workspace}/repositories/sync", headers=headers)
+    sync = client.post(f"/v1/workspaces/{workspace}/repositories/sync", headers=headers)
     tracking = client.patch(
-        f"/api/v1/workspaces/{workspace}/repositories/{repo_id}/tracking",
+        f"/v1/workspaces/{workspace}/repositories/{repo_id}/tracking",
         json={"isTracked": True},
         headers=headers,
     )
@@ -291,18 +427,18 @@ def test_installation_status_requires_browser_membership_and_exposes_no_credenti
     client, _ = github_app_client
     workspace = workspace_id(client)
 
-    disconnected = client.get(f"/api/v1/workspaces/{workspace}/github/installation")
+    disconnected = client.get(f"/v1/workspaces/{workspace}/github/installation")
     attached = client.post(
-        f"/api/v1/workspaces/{workspace}/github/installation",
+        f"/v1/workspaces/{workspace}/github/installation",
         json={"installationId": 42},
         headers=mutation_headers(client),
     )
-    connected = client.get(f"/api/v1/workspaces/{workspace}/github/installation")
+    connected = client.get(f"/v1/workspaces/{workspace}/github/installation")
     missing_membership = client.get(
-        "/api/v1/workspaces/00000000-0000-0000-0000-000000000001/github/installation"
+        "/v1/workspaces/00000000-0000-0000-0000-000000000001/github/installation"
     )
     client.cookies.clear()
-    unauthenticated = client.get(f"/api/v1/workspaces/{workspace}/github/installation")
+    unauthenticated = client.get(f"/v1/workspaces/{workspace}/github/installation")
 
     assert disconnected.status_code == 200
     assert disconnected.json() == {

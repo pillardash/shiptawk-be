@@ -29,6 +29,22 @@ class WebsitePageStatus(StrEnum):
     failed = "failed"
 
 
+class WebsitePageType(StrEnum):
+    homepage = "homepage"
+    product = "product"
+    pricing = "pricing"
+    conversion = "conversion"
+    blog = "blog"
+    documentation = "documentation"
+    other = "other"
+
+
+class WebsiteReadinessBlockingReason(StrEnum):
+    not_configured = "website_not_configured"
+    inactive = "website_inactive"
+    initial_crawl_incomplete = "initial_crawl_incomplete"
+
+
 class WebsiteCrawlResultStatus(StrEnum):
     succeeded = "succeeded"
     blocked = "blocked"
@@ -48,5 +64,7 @@ __all__ = [
     "WebsiteCrawlRunStatus",
     "WebsiteCrawlTrigger",
     "WebsitePageStatus",
+    "WebsitePageType",
+    "WebsiteReadinessBlockingReason",
     "WebsiteSourceStatus",
 ]

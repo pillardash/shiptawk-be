@@ -105,6 +105,7 @@ class WebsiteCrawlResult(BaseModel):
     indexability_reasons: Mapped[list[str]] = mapped_column(
         website_json_type, nullable=False, default=list, server_default="[]"
     )
+    internal_links: Mapped[list[str] | None] = mapped_column(website_json_type)
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(Text)

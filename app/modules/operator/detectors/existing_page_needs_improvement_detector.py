@@ -11,7 +11,7 @@ from app.modules.operator.schemas.opportunity_detection_schema import (
 )
 
 DETECTOR_ID = "existing_page_needs_improvement"
-DETECTOR_VERSION = "1"
+DETECTOR_VERSION = "2"
 
 
 def detect(data: DetectionInput) -> tuple[DetectorEvaluation, ...]:
@@ -22,6 +22,13 @@ def detect(data: DetectionInput) -> tuple[DetectorEvaluation, ...]:
     pages = {
         p.page_fingerprint: p for p in data.website.pages if isinstance(p, WebsitePageSnapshot)
     }
+    conversion_destinations = {
+        page.url.rstrip("/")
+        for page in pages.values()
+        if page.page_type == "conversion" and page.crawl_status == "succeeded"
+    }
+    if data.profile.conversion_url:
+        conversion_destinations = {data.profile.conversion_url.rstrip("/")}
     out = []
     for sp in sorted(data.search.pages, key=lambda x: x.url_fingerprint):
         page = pages.get(sp.website_page_fingerprint or "")
@@ -32,6 +39,16 @@ def detect(data: DetectionInput) -> tuple[DetectorEvaluation, ...]:
         elif page.crawl_status != "succeeded":
             reason = EvaluationReason.website_crawl_failed
         else:
+            conversion_path_defect = (
+                page.internal_links is not None
+                and bool(conversion_destinations)
+                and (
+                    page.url.rstrip("/") not in conversion_destinations
+                    and conversion_destinations.isdisjoint(
+                        link.rstrip("/") for link in page.internal_links
+                    )
+                )
+            )
             defect_count = sum(
                 (
                     not page.title,
@@ -42,6 +59,7 @@ def detect(data: DetectionInput) -> tuple[DetectorEvaluation, ...]:
                         page.canonical_fingerprint is not None
                         and page.canonical_fingerprint != page.page_fingerprint
                     ),
+                    conversion_path_defect,
                 )
             )
             if defect_count:
@@ -58,6 +76,7 @@ def detect(data: DetectionInput) -> tuple[DetectorEvaluation, ...]:
                         page.canonical_fingerprint is None
                         or page.canonical_fingerprint == page.page_fingerprint
                     )
+                    and not conversion_path_defect
                 )
                 out.append(
                     candidate(
@@ -68,7 +87,8 @@ def detect(data: DetectionInput) -> tuple[DetectorEvaluation, ...]:
                         "page",
                         page.page_fingerprint,
                         f"Fix page quality issues on {page.url}",
-                        "Correct deterministic metadata, heading, indexing, or canonical defects.",
+                        "Correct deterministic metadata, heading, indexing, canonical, "
+                        "or conversion-path defects.",
                         sp.current,
                         data.as_of,
                         impact=scores["impact"],

@@ -9,6 +9,7 @@ import inngest
 import pytest
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import func, insert, select
@@ -390,6 +391,9 @@ async def test_search_sync_workflow_validates_correlation_and_passes_only_run_id
         onboarding=DeferredOnboardingWorkflow(),
         digests=None,
         search_syncs=search,
+        legacy_daily_draft_schedule_enabled=True,
+        legacy_achievement_digest_schedules_enabled=True,
+        legacy_repository_changelog_schedules_enabled=True,
     ).functions
     run_id = uuid4()
     context = MagicMock()
@@ -435,12 +439,26 @@ async def test_failed_event_publication_can_be_retried_without_a_duplicate_consu
     assert (row.processing_state, row.publish_attempts) == ("enqueued", 2)
 
 
-def test_fastapi_serves_all_backend_owned_inngest_functions() -> None:
-    with TestClient(create_app()) as client:
+def test_fastapi_serves_inngest_functions_without_exposing_route_in_openapi() -> None:
+    app = create_app()
+    inngest_routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.path == "/api/inngest"
+    ]
+
+    with TestClient(app) as client:
         response = client.get("/api/inngest")
 
+    assert {method for route in inngest_routes for method in route.methods} == {
+        "GET",
+        "POST",
+        "PUT",
+    }
+    assert all(route.include_in_schema is False for route in inngest_routes)
+    assert "/api/inngest" not in app.openapi()["paths"]
     assert response.status_code == 200
-    assert response.json()["function_count"] == 16
+    assert response.json()["function_count"] == 11
     assert response.json()["mode"] == "dev"
 
 
@@ -472,6 +490,9 @@ async def test_digest_schedules_use_deterministic_backend_workflows() -> None:
         digests=achievement,
         draft_digests=drafts,
         repo_digests=repository,
+        legacy_daily_draft_schedule_enabled=True,
+        legacy_achievement_digest_schedules_enabled=True,
+        legacy_repository_changelog_schedules_enabled=True,
     ).functions
     context = MagicMock()
 
@@ -515,6 +536,9 @@ async def test_workflow_handlers_validate_metadata_and_skip_unconfigured_digest_
         github=github,
         onboarding=onboarding,
         digests=None,
+        legacy_daily_draft_schedule_enabled=True,
+        legacy_achievement_digest_schedules_enabled=True,
+        legacy_repository_changelog_schedules_enabled=True,
     ).functions
     consumer_id = uuid4()
     user_id = uuid4()

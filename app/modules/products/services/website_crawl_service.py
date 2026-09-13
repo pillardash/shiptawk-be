@@ -1,4 +1,5 @@
 import hashlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urljoin, urlsplit
 from uuid import UUID
@@ -7,6 +8,7 @@ from xml.etree import ElementTree
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.products.enums.product_profile_enum import ProductProfileStatus
 from app.modules.products.enums.website_intelligence_enum import (
     WebsiteCapabilityMappingStatus,
@@ -36,6 +38,13 @@ from app.modules.products.providers.website_fetch_provider import (
     WebsiteFetchResult,
 )
 from app.modules.products.services.website_extraction_service import extract_website_page
+
+
+@dataclass(frozen=True, slots=True)
+class SitemapDiscovery:
+    attempted: int
+    succeeded: int
+    pages_discovered: int
 
 
 class WebsiteCrawlService:
@@ -117,7 +126,8 @@ class WebsiteCrawlService:
                 url for url in (source.blog_url, source.documentation_url) if url is not None
             )
             page_limit = min(run.page_limit, MAX_CRAWL_PAGES)
-            sitemap_fetches = await self._discover_sitemaps(
+            sitemap_candidates_start = len(candidates)
+            sitemap_discovery = await self._discover_sitemaps(
                 source,
                 candidates,
                 max_fetches=max(0, page_limit - 1),
@@ -125,7 +135,7 @@ class WebsiteCrawlService:
             targets = select_crawl_urls(
                 base_url,
                 candidates,
-                max_pages=max(1, page_limit - sitemap_fetches),
+                max_pages=max(1, page_limit - sitemap_discovery.attempted),
             )
             run.pages_discovered = len(targets)
 
@@ -173,8 +183,37 @@ class WebsiteCrawlService:
             run.pages_failed = failed
             run.status = WebsiteCrawlRunStatus.succeeded
             run.completed_at = completed_at
-            run.summary = {"pagesSucceeded": succeeded, "pagesFailed": failed}
+            link_pages_discovered = sitemap_candidates_start
+            run.summary = {
+                "pagesSucceeded": succeeded,
+                "pagesFailed": failed,
+                "discoveryMethod": (
+                    "sitemap_and_links"
+                    if sitemap_discovery.pages_discovered and link_pages_discovered
+                    else "sitemap"
+                    if sitemap_discovery.pages_discovered
+                    else "links"
+                ),
+                "sitemapUrlsAttempted": sitemap_discovery.attempted,
+                "sitemapUrlsSucceeded": sitemap_discovery.succeeded,
+                "sitemapPagesDiscovered": sitemap_discovery.pages_discovered,
+                "sitemapFallbackUsed": (
+                    sitemap_discovery.attempted > 0 and sitemap_discovery.pages_discovered == 0
+                ),
+            }
+            first_success = source.last_successful_crawl_at is None
             source.last_successful_crawl_at = completed_at
+            if first_success:
+                await write_product_event(
+                    db,
+                    workspace_id=run.workspace_id,
+                    product_id=run.product_id,
+                    actor_id=None,
+                    event_name="website_initial_crawl_completed",
+                    idempotency_key=f"website-initial-crawl-completed:{source.id}",
+                    resource_type="website_crawl_run",
+                    resource_id=run.id,
+                )
             await db.commit()
             return self._result(run)
 
@@ -326,13 +365,15 @@ class WebsiteCrawlService:
         candidates: list[str],
         *,
         max_fetches: int,
-    ) -> int:
+    ) -> SitemapDiscovery:
         base_host = urlsplit(source.normalized_base_url).hostname
         pending = list(source.sitemap_urls) or [
             urljoin(source.normalized_base_url, "/sitemap.xml"),
             urljoin(source.normalized_base_url, "/sitemap_index.xml"),
         ]
         visited: set[str] = set()
+        succeeded = 0
+        pages_discovered = 0
         while pending and len(visited) < max_fetches:
             raw_url = pending.pop(0)
             try:
@@ -352,6 +393,7 @@ class WebsiteCrawlService:
                 root = ElementTree.fromstring(fetched.body)
             except (WebsiteFetchError, ElementTree.ParseError):
                 continue
+            succeeded += 1
             locations = [
                 element.text.strip()
                 for element in root.iter()
@@ -361,7 +403,10 @@ class WebsiteCrawlService:
                 pending.extend(locations)
             else:
                 candidates.extend(locations)
-        return len(visited)
+                pages_discovered += len(locations)
+        return SitemapDiscovery(
+            attempted=len(visited), succeeded=succeeded, pages_discovered=pages_discovered
+        )
 
     async def _page(
         self,
@@ -444,6 +489,7 @@ class WebsiteCrawlService:
         result.content_fingerprint = extraction.fingerprint
         result.is_indexable = extraction.is_indexable
         result.indexability_reasons = [] if extraction.is_indexable else ["noindex"]
+        result.internal_links = list(extraction.internal_links)
         result.fetched_at = datetime.now(UTC)
         result.error_code = None
         result.error_message = None

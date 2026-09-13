@@ -95,6 +95,23 @@ async def get_scoped_sync_run(
     )
 
 
+async def list_scoped_sync_runs(
+    db: AsyncSession, workspace_id: UUID, product_id: UUID, *, limit: int = 20
+) -> list[SearchSyncRun]:
+    return list(
+        await db.scalars(
+            select(SearchSyncRun)
+            .where(
+                SearchSyncRun.workspace_id == workspace_id,
+                SearchSyncRun.product_id == product_id,
+                SearchSyncRun.deleted_at.is_(None),
+            )
+            .order_by(SearchSyncRun.created_at.desc(), SearchSyncRun.id.desc())
+            .limit(limit)
+        )
+    )
+
+
 get_sync_run = get_scoped_sync_run
 
 
@@ -292,6 +309,7 @@ __all__ = [
     "get_sync_run",
     "insert_or_replay_sync_run",
     "list_active_sources_for_schedule",
+    "list_scoped_sync_runs",
     "load_processing_context",
     "page_identity",
     "query_identity",

@@ -1,3 +1,4 @@
+import os
 from collections.abc import Generator
 
 import pytest
@@ -9,6 +10,18 @@ from app.db.session import reset_database_state
 # Test collection imports the application before fixtures run. Disable dotenv
 # loading process-wide so developer credentials cannot affect test behavior.
 Settings.model_config["env_file"] = None
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    if os.getenv("REQUIRE_NO_SKIPS") != "1":
+        return
+    terminal = session.config.pluginmanager.get_plugin("terminalreporter")
+    skipped = terminal.stats.get("skipped", []) if terminal is not None else []
+    if skipped and terminal is not None:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        terminal.write_sep(
+            "=", f"CI requires all tests to run; {len(skipped)} test(s) skipped", red=True
+        )
 
 
 @pytest.fixture(autouse=True)

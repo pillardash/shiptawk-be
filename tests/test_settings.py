@@ -5,6 +5,10 @@ from pytest import MonkeyPatch
 from app.core.config import Settings
 
 
+def test_api_prefix_defaults_to_v1() -> None:
+    assert Settings(_env_file=None).api_v1_prefix == "/v1"
+
+
 def test_cors_origins_accept_comma_separated_env_value() -> None:
     settings = Settings(cors_origins="http://localhost:3000,http://localhost:5173")
 
@@ -302,6 +306,26 @@ def test_github_provider_requires_complete_configuration() -> None:
         Settings(oauth_enabled_providers=["github"], github_oauth_client_id="client")
 
 
+def test_google_login_credentials_are_required_and_separate_from_search() -> None:
+    with pytest.raises(ValidationError, match="GOOGLE_LOGIN_CLIENT_SECRET"):
+        Settings(oauth_enabled_providers=["google"], google_login_client_id="login-client")
+    with pytest.raises(ValidationError, match="GOOGLE_LOGIN_CLIENT_ID"):
+        Settings(
+            oauth_enabled_providers=["google"],
+            google_search_client_id="search-client",
+            google_search_client_secret="search-secret",
+        )
+    settings = Settings(
+        oauth_enabled_providers=["google"],
+        google_login_client_id="login-client",
+        google_login_client_secret="login-secret",
+        google_search_client_id="search-client",
+        google_search_client_secret="search-secret",
+    )
+    assert settings.google_login_client_id == "login-client"
+    assert settings.google_search_client_id == "search-client"
+
+
 def test_enabled_github_webhook_requires_secret_and_valid_encryption_key() -> None:
     with pytest.raises(ValidationError, match="GITHUB_WEBHOOK_SECRET"):
         Settings(github_webhook_enabled=True)
@@ -349,6 +373,30 @@ def test_inngest_workflows_are_disabled_by_default() -> None:
     settings = Settings()
 
     assert settings.inngest_enabled is False
+
+
+def test_competing_email_schedules_are_disabled_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.legacy_daily_draft_schedule_enabled is False
+    assert settings.legacy_achievement_digest_schedules_enabled is False
+    assert settings.legacy_repository_changelog_schedules_enabled is False
+    assert settings.weekly_growth_schedule_enabled is True
+
+
+def test_email_schedules_support_explicit_opt_in_and_independent_weekly_control() -> None:
+    settings = Settings(
+        _env_file=None,
+        legacy_daily_draft_schedule_enabled=True,
+        legacy_achievement_digest_schedules_enabled=True,
+        legacy_repository_changelog_schedules_enabled=True,
+        weekly_growth_schedule_enabled=False,
+    )
+
+    assert settings.legacy_daily_draft_schedule_enabled is True
+    assert settings.legacy_achievement_digest_schedules_enabled is True
+    assert settings.legacy_repository_changelog_schedules_enabled is True
+    assert settings.weekly_growth_schedule_enabled is False
 
 
 def test_enabled_inngest_requires_only_its_event_key_in_local_development() -> None:

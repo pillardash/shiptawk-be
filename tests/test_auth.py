@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import StaticPool, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.config import get_settings
 from app.core.security import create_access_token, decode_access_token
 from app.db.base import Base
 from app.db.session import get_db
@@ -73,14 +75,14 @@ def auth_client() -> Generator[tuple[TestClient, FakeOAuthProvider], None, None]
 
 def complete_oauth(client: TestClient, *, state_suffix: str = "") -> None:
     authorize = client.get(
-        "/api/v1/auth/browser/oauth/github/authorize",
+        "/v1/auth/browser/oauth/github/authorize",
         params={"returnPath": f"/dashboard{state_suffix}"},
         follow_redirects=False,
     )
     assert authorize.status_code == 307
     state = authorize.headers["location"].split("state=")[1].split("&")[0]
     callback = client.get(
-        "/api/v1/auth/browser/oauth/github/callback",
+        "/v1/auth/browser/oauth/github/callback",
         params={"code": "deterministic-code", "state": state},
         follow_redirects=False,
     )
@@ -99,11 +101,11 @@ def test_password_auth_routes_are_not_public(
     openapi = client.get("/openapi.json").json()
 
     for path in (
-        "/api/v1/auth/register",
-        "/api/v1/auth/login",
-        "/api/v1/auth/forgot-password",
-        "/api/v1/auth/reset-password",
-        "/api/v1/auth/change-password",
+        "/v1/auth/register",
+        "/v1/auth/login",
+        "/v1/auth/forgot-password",
+        "/v1/auth/reset-password",
+        "/v1/auth/change-password",
     ):
         assert path not in openapi["paths"]
 
@@ -113,10 +115,10 @@ def test_browser_provider_discovery_and_validation(
 ) -> None:
     client, _ = auth_client
 
-    providers = client.get("/api/v1/auth/browser/providers")
-    missing = client.get("/api/v1/auth/browser/oauth/google/authorize", follow_redirects=False)
+    providers = client.get("/v1/auth/browser/providers")
+    missing = client.get("/v1/auth/browser/oauth/google/authorize", follow_redirects=False)
     invalid_return = client.get(
-        "/api/v1/auth/browser/oauth/github/authorize",
+        "/v1/auth/browser/oauth/github/authorize",
         params={"returnPath": "https://attacker.example"},
         follow_redirects=False,
     )
@@ -134,15 +136,15 @@ def test_oauth_state_is_one_time_and_browser_session_requires_cookie(
     auth_client: tuple[TestClient, FakeOAuthProvider],
 ) -> None:
     client, _ = auth_client
-    authorize = client.get("/api/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
+    authorize = client.get("/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
     state = authorize.headers["location"].split("state=")[1].split("&")[0]
     first = client.get(
-        "/api/v1/auth/browser/oauth/github/callback",
+        "/v1/auth/browser/oauth/github/callback",
         params={"code": "code", "state": state},
         follow_redirects=False,
     )
     second = client.get(
-        "/api/v1/auth/browser/oauth/github/callback",
+        "/v1/auth/browser/oauth/github/callback",
         params={"code": "code", "state": state},
         follow_redirects=False,
     )
@@ -151,9 +153,16 @@ def test_oauth_state_is_one_time_and_browser_session_requires_cookie(
     assert second.status_code == 400
     assert second.json()["code"] == "invalid_oauth_state"
     client.cookies.clear()
-    missing = client.get("/api/v1/auth/browser/session")
+    missing = client.get("/v1/auth/browser/session")
     assert missing.status_code == 401
     assert missing.json()["code"] == "missing_session"
+    client.cookies.set(
+        "access_token",
+        create_access_token("00000000-0000-0000-0000-000000000001", session_id="not-a-uuid"),
+    )
+    invalid = client.get("/v1/auth/browser/session")
+    assert invalid.status_code == 401
+    assert invalid.json()["code"] == "invalid_session"
 
 
 def test_access_token_round_trip() -> None:
@@ -166,7 +175,7 @@ def test_oauth_callback_provisions_account_workspace_and_session_atomically(
     client, _ = auth_client
     complete_oauth(client)
 
-    response = client.get("/api/v1/auth/browser/session")
+    response = client.get("/v1/auth/browser/session")
     assert response.status_code == 200
     payload = response.json()
     assert payload["user"]["email"] == "user@example.com"
@@ -182,6 +191,128 @@ def test_oauth_callback_provisions_account_workspace_and_session_atomically(
     assert run_with_db(client, lambda db: model_count(db, AuthSession)) == 1
 
 
+async def add_available_workspaces(db: AsyncSession) -> tuple[Workspace, Workspace]:
+    user = (await db.scalars(select(User))).one()
+    active = Workspace(name="Active workspace")
+    inactive = Workspace(name="Inactive workspace")
+    db.add_all([active, inactive])
+    await db.flush()
+    db.add_all(
+        [
+            WorkspaceMembership(
+                workspace_id=active.id,
+                user_id=user.id,
+                role=WorkspaceRole.editor,
+            ),
+            WorkspaceMembership(
+                workspace_id=inactive.id,
+                user_id=user.id,
+                role=WorkspaceRole.viewer,
+                is_active=False,
+            ),
+        ]
+    )
+    await db.commit()
+    return active, inactive
+
+
+def test_browser_available_workspaces_returns_only_active_memberships(
+    auth_client: tuple[TestClient, FakeOAuthProvider],
+) -> None:
+    client, _ = auth_client
+    complete_oauth(client)
+    active, _ = run_with_db(client, add_available_workspaces)
+
+    response = client.get("/v1/auth/browser/workspaces")
+
+    assert response.status_code == 200
+    assert {(item["name"], item["role"]) for item in response.json()} == {
+        ("Octo Cat's workspace", "owner"),
+        ("Active workspace", "editor"),
+    }
+    assert next(item for item in response.json() if item["name"] == "Active workspace")[
+        "id"
+    ] == str(active.id)
+
+
+async def session_workspace_ids(db: AsyncSession) -> list[UUID]:
+    return list(
+        await db.scalars(select(AuthSession.current_workspace_id).order_by(AuthSession.created_at))
+    )
+
+
+def test_browser_session_workspace_switch_is_authorized_and_session_local(
+    auth_client: tuple[TestClient, FakeOAuthProvider],
+) -> None:
+    client, _ = auth_client
+    complete_oauth(client)
+    original_workspace_id = run_with_db(client, session_workspace_ids)[0]
+    complete_oauth(client, state_suffix="?second=1")
+    active, _ = run_with_db(client, add_available_workspaces)
+    csrf = client.cookies["csrf_token"]
+
+    response = client.patch(
+        "/v1/auth/browser/session/workspace",
+        json={"workspaceId": str(active.id)},
+        headers={"Origin": "http://localhost:3000", "X-CSRF-Token": csrf},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["currentWorkspace"] == {
+        "id": str(active.id),
+        "name": "Active workspace",
+        "role": "editor",
+    }
+    assert response.json()["linkedProviders"] == ["github"]
+    assert run_with_db(client, session_workspace_ids) == [original_workspace_id, active.id]
+
+
+def test_browser_session_workspace_switch_rejects_inactive_membership(
+    auth_client: tuple[TestClient, FakeOAuthProvider],
+) -> None:
+    client, _ = auth_client
+    complete_oauth(client)
+    _, inactive = run_with_db(client, add_available_workspaces)
+    csrf = client.cookies["csrf_token"]
+
+    response = client.patch(
+        "/v1/auth/browser/session/workspace",
+        json={"workspaceId": str(inactive.id)},
+        headers={"Origin": "http://localhost:3000", "X-CSRF-Token": csrf},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "workspace_access_denied"
+
+
+async def delete_workspace(db: AsyncSession, workspace_id: UUID) -> None:
+    workspace = await db.get(Workspace, workspace_id)
+    assert workspace is not None
+    workspace.deleted_at = datetime.now(UTC)
+    await db.commit()
+
+
+def test_browser_session_workspace_switch_rejects_deleted_workspace(
+    auth_client: tuple[TestClient, FakeOAuthProvider],
+) -> None:
+    client, _ = auth_client
+    complete_oauth(client)
+    original_workspace_id = run_with_db(client, session_workspace_ids)[0]
+    active, _ = run_with_db(client, add_available_workspaces)
+    run_with_db(client, lambda db: delete_workspace(db, active.id))
+    csrf = client.cookies["csrf_token"]
+
+    response = client.patch(
+        "/v1/auth/browser/session/workspace",
+        json={"workspaceId": str(active.id)},
+        headers={"Origin": "http://localhost:3000", "X-CSRF-Token": csrf},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "workspace_access_denied"
+    assert run_with_db(client, session_workspace_ids) == [original_workspace_id]
+
+
 def test_oauth_callback_rolls_back_all_provisioning_when_session_creation_fails(
     auth_client: tuple[TestClient, FakeOAuthProvider], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -194,12 +325,12 @@ def test_oauth_callback_rolls_back_all_provisioning_when_session_creation_fails(
         "app.modules.identity.services.browser_oauth.create_refresh_session_record",
         fail_session_creation,
     )
-    authorize = client.get("/api/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
+    authorize = client.get("/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
     state = authorize.headers["location"].split("state=")[1].split("&")[0]
 
     with pytest.raises(RuntimeError, match="session storage failed"):
         client.get(
-            "/api/v1/auth/browser/oauth/github/callback",
+            "/v1/auth/browser/oauth/github/callback",
             params={"code": "code", "state": state},
             follow_redirects=False,
         )
@@ -233,14 +364,14 @@ def test_browser_refresh_rotates_session_and_logout_revokes_it(
     csrf = client.cookies["csrf_token"]
 
     bad_origin = client.post(
-        "/api/v1/auth/browser/refresh",
+        "/v1/auth/browser/refresh",
         headers={"Origin": "https://attacker.example", "X-CSRF-Token": csrf},
     )
     assert bad_origin.status_code == 400
     assert bad_origin.json()["code"] == "invalid_origin"
 
     refreshed = client.post(
-        "/api/v1/auth/browser/refresh",
+        "/v1/auth/browser/refresh",
         headers={"Origin": "http://localhost:3000", "X-CSRF-Token": csrf},
     )
     assert refreshed.status_code == 200
@@ -249,7 +380,7 @@ def test_browser_refresh_rotates_session_and_logout_revokes_it(
 
     new_csrf = client.cookies["csrf_token"]
     logged_out = client.post(
-        "/api/v1/auth/browser/logout",
+        "/v1/auth/browser/logout",
         headers={"Origin": "http://localhost:3000", "X-CSRF-Token": new_csrf},
     )
     assert logged_out.status_code == 200
@@ -273,7 +404,7 @@ def test_browser_refresh_uses_opaque_refresh_session_without_valid_access_jwt(
         )
 
     response = client.post(
-        "/api/v1/auth/browser/refresh",
+        "/v1/auth/browser/refresh",
         headers={"Origin": "http://localhost:3000", "X-CSRF-Token": csrf},
     )
 
@@ -286,10 +417,10 @@ def test_logout_is_idempotent_without_authentication_and_always_clears_cookies(
 ) -> None:
     client, _ = auth_client
     client.cookies.set("access_token", "expired", path="/")
-    client.cookies.set("refresh_token", "revoked-or-invalid", path="/api/v1/auth/browser")
+    client.cookies.set("refresh_token", "revoked-or-invalid", path="/v1/auth/browser")
     client.cookies.set("csrf_token", "stale", path="/")
 
-    response = client.post("/api/v1/auth/browser/logout")
+    response = client.post("/v1/auth/browser/logout")
 
     assert response.status_code == 200
     cleared = response.headers.get_list("set-cookie")
@@ -297,6 +428,15 @@ def test_logout_is_idempotent_without_authentication_and_always_clears_cookies(
         any(cookie.startswith(f"{name}=") and "Max-Age=0" in cookie for cookie in cleared)
         for name in ("access_token", "refresh_token", "csrf_token")
     )
+    refresh_clears = [cookie for cookie in cleared if cookie.startswith("refresh_token=")]
+    assert {cookie.split("Path=")[1].split(";")[0] for cookie in refresh_clears} == {
+        "/",
+        "/v1/auth/browser",
+    }
+
+
+def test_browser_refresh_cookie_path_defaults_to_root() -> None:
+    assert get_settings().browser_refresh_cookie_path == "/"
 
 
 def test_active_logout_requires_refresh_session_bound_csrf_without_access_jwt(
@@ -306,7 +446,7 @@ def test_active_logout_requires_refresh_session_bound_csrf_without_access_jwt(
     complete_oauth(client)
     del client.cookies["access_token"]
 
-    missing_csrf = client.post("/api/v1/auth/browser/logout")
+    missing_csrf = client.post("/v1/auth/browser/logout")
     assert missing_csrf.status_code == 400
     assert missing_csrf.json()["code"] == "invalid_origin"
 
@@ -318,7 +458,7 @@ def test_active_logout_requires_access_session_bound_csrf_without_refresh_cookie
     complete_oauth(client)
     del client.cookies["refresh_token"]
 
-    missing_csrf = client.post("/api/v1/auth/browser/logout")
+    missing_csrf = client.post("/v1/auth/browser/logout")
 
     assert missing_csrf.status_code == 400
     assert missing_csrf.json()["code"] == "invalid_origin"
@@ -340,12 +480,21 @@ def test_account_deletion_soft_deletes_user_revokes_identity_and_sessions(
     csrf = client.cookies["csrf_token"]
 
     response = client.delete(
-        "/api/v1/auth/browser/account",
+        "/v1/auth/browser/account",
         headers={"Origin": "http://localhost:3000", "X-CSRF-Token": csrf},
     )
 
     assert response.status_code == 200
     assert not client.cookies
+    refresh_clears = [
+        cookie
+        for cookie in response.headers.get_list("set-cookie")
+        if cookie.startswith("refresh_token=")
+    ]
+    assert {cookie.split("Path=")[1].split(";")[0] for cookie in refresh_clears} == {
+        "/",
+        "/v1/auth/browser",
+    }
     user, identity, session = run_with_db(client, soft_delete_account_state)
     assert user.deleted_at is not None
     assert user.is_active is False
@@ -361,16 +510,16 @@ def test_soft_deleted_oauth_identity_is_not_automatically_restored(
     csrf = client.cookies["csrf_token"]
     assert (
         client.delete(
-            "/api/v1/auth/browser/account",
+            "/v1/auth/browser/account",
             headers={"Origin": "http://localhost:3000", "X-CSRF-Token": csrf},
         ).status_code
         == 200
     )
 
-    authorize = client.get("/api/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
+    authorize = client.get("/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
     state = authorize.headers["location"].split("state=")[1].split("&")[0]
     response = client.get(
-        "/api/v1/auth/browser/oauth/github/callback",
+        "/v1/auth/browser/oauth/github/callback",
         params={"code": "code", "state": state},
         follow_redirects=False,
     )
@@ -386,14 +535,14 @@ def test_oauth_callback_uses_canonical_public_backend_url_not_request_host(
     client, _ = auth_client
 
     response = client.get(
-        "/api/v1/auth/browser/oauth/github/authorize",
+        "/v1/auth/browser/oauth/github/authorize",
         headers={"Host": "attacker.example", "X-Forwarded-Host": "attacker.example"},
         follow_redirects=False,
     )
 
     assert response.status_code == 307
     canonical_callback = (
-        "redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fapi%2Fv1%2Fauth%2Fbrowser%2F"
+        "redirect_uri=http%3A%2F%2Flocalhost%3A8000%2Fv1%2Fauth%2Fbrowser%2F"
         "oauth%2Fgithub%2Fcallback"
     )
     assert canonical_callback in response.headers["location"]
@@ -412,10 +561,10 @@ def test_oauth_callback_rejects_inactive_existing_user(
     complete_oauth(client)
     run_with_db(client, deactivate_user)
 
-    authorize = client.get("/api/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
+    authorize = client.get("/v1/auth/browser/oauth/github/authorize", follow_redirects=False)
     state = authorize.headers["location"].split("state=")[1].split("&")[0]
     response = client.get(
-        "/api/v1/auth/browser/oauth/github/callback",
+        "/v1/auth/browser/oauth/github/callback",
         params={"code": "code", "state": state},
         follow_redirects=False,
     )
@@ -444,7 +593,7 @@ def test_browser_session_rejects_cross_workspace_session_binding(
     complete_oauth(client)
     run_with_db(client, point_session_at_cross_workspace)
 
-    response = client.get("/api/v1/auth/browser/session")
+    response = client.get("/v1/auth/browser/session")
 
     assert response.status_code == 403
     assert response.json()["code"] == "workspace_access_denied"
@@ -473,3 +622,19 @@ def test_workspace_roles_include_product_roles() -> None:
         "reviewer",
         "viewer",
     }
+
+
+def test_browser_workspace_openapi_contract_is_camel_case(
+    auth_client: tuple[TestClient, FakeOAuthProvider],
+) -> None:
+    client, _ = auth_client
+    openapi = client.get("/openapi.json").json()
+
+    assert "/v1/auth/browser/workspaces" in openapi["paths"]
+    operation = openapi["paths"]["/v1/auth/browser/session/workspace"]["patch"]
+    request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    assert request_schema == {"$ref": "#/components/schemas/BrowserWorkspaceUpdate"}
+    schema = openapi["components"]["schemas"]["BrowserWorkspaceUpdate"]
+    assert schema["required"] == ["workspaceId"]
+    assert "workspaceId" in schema["properties"]
+    assert "workspace_id" not in schema["properties"]

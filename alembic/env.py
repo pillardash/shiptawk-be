@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.db import outbox as outbox_models  # noqa: F401
 from app.db.base import Base
 from app.modules.achievement_digests import models as achievement_digest_models  # noqa: F401
+from app.modules.analytics import models as analytics_models  # noqa: F401
 from app.modules.drafts import models as draft_models  # noqa: F401
 from app.modules.evidence import models as evidence_models  # noqa: F401
 from app.modules.identity import models as identity_models  # noqa: F401

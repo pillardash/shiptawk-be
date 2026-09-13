@@ -5,6 +5,7 @@ from uuid import UUID
 import inngest
 import inngest.fast_api
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 
 from app.workflows.contracts import (
     GitHubEventMetadata,
@@ -112,6 +113,10 @@ def create_workflow_functions(
     weekly_operator_scheduler: WeeklyOperatorSchedulerProtocol | None = None,
     weekly_growth_email: WeeklyGrowthEmailWorkflowProtocol | None = None,
     measurement_followup: MeasurementFollowupWorkflowProtocol | None = None,
+    legacy_daily_draft_schedule_enabled: bool = False,
+    legacy_achievement_digest_schedules_enabled: bool = False,
+    legacy_repository_changelog_schedules_enabled: bool = False,
+    weekly_growth_schedule_enabled: bool = True,
 ) -> WorkflowFunctions:
     @client.create_function(
         fn_id="process-github-event-received",
@@ -347,20 +352,25 @@ def create_workflow_functions(
         process_github,
         process_onboarding,
         process_website_crawl,
-        send_draft_digests,
-        send_weekly_digests,
-        send_monthly_digests,
-        send_weekly_repo_digests,
-        send_monthly_repo_digests,
-        deliver_transactional_outbox,
-        process_search_sync,
-        process_opportunity_detection,
-        schedule_search_syncs,
-        process_weekly_operator,
-        schedule_weekly_operators,
-        deliver_weekly_growth_email,
-        measure_operator_action,
     ]
+    if legacy_daily_draft_schedule_enabled:
+        functions.append(send_draft_digests)
+    if legacy_achievement_digest_schedules_enabled:
+        functions.extend([send_weekly_digests, send_monthly_digests])
+    if legacy_repository_changelog_schedules_enabled:
+        functions.extend([send_weekly_repo_digests, send_monthly_repo_digests])
+    functions.extend(
+        [
+            deliver_transactional_outbox,
+            process_search_sync,
+            process_opportunity_detection,
+            schedule_search_syncs,
+            process_weekly_operator,
+        ]
+    )
+    if weekly_growth_schedule_enabled:
+        functions.append(schedule_weekly_operators)
+    functions.extend([deliver_weekly_growth_email, measure_operator_action])
     return WorkflowFunctions(client=client, functions=functions)
 
 
@@ -371,3 +381,6 @@ def serve_workflow_functions(app: FastAPI, workflow: WorkflowFunctions) -> None:
         cast(list[Any], workflow.functions),
         serve_path="/api/inngest",
     )
+    for route in app.routes:
+        if isinstance(route, APIRoute) and route.path == "/api/inngest":
+            route.include_in_schema = False

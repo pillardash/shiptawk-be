@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.products.models import Product
 from app.modules.products.repositories.product_repository import (
     delete_product_records,
@@ -19,6 +21,7 @@ from app.modules.products.schemas.product_schema import (
     ProductRepositoryRoleDescriptionUpdate,
     ProductWrite,
 )
+from app.modules.workspaces.models import Workspace
 from app.modules.workspaces.policies import can_write_products
 from app.modules.workspaces.repositories import get_active_membership_role
 from app.shared.exceptions import ConflictError, ForbiddenError, NotFoundError
@@ -88,6 +91,22 @@ async def create_product(
     )
     product = Product(workspace_id=workspace_id, user_id=user_id, **_product_values(payload))
     db.add(product)
+    await db.flush()
+    workspace = await db.scalar(
+        select(Workspace).where(Workspace.id == workspace_id).with_for_update()
+    )
+    if workspace is not None and workspace.activation_product_id is None:
+        workspace.activation_product_id = product.id
+    await write_product_event(
+        db,
+        workspace_id=workspace_id,
+        product_id=product.id,
+        actor_id=user_id,
+        event_name="product_created",
+        idempotency_key=f"product-created:{product.id}",
+        resource_type="product",
+        resource_id=product.id,
+    )
     await _commit(db)
     await db.refresh(product)
     return product

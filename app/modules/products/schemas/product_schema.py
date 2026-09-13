@@ -17,9 +17,15 @@ class ProductWrite(ApiSchema):
     name: ProductText = Field(min_length=1, max_length=120)
     description: ProductText = Field(default="", max_length=1200)
     website_url: ProductText = Field(default="", max_length=500)
-    target_audience: ProductText = Field(default="", max_length=180)
-    messaging_angle: ProductText = Field(default="", max_length=220)
-    tone_override: Literal["casual", "technical", "hype"] | None = None
+    target_audience: ProductText = Field(
+        default="", max_length=180, description="Legacy marketing field; use productProfile."
+    )
+    messaging_angle: ProductText = Field(
+        default="", max_length=220, description="Legacy marketing field; use productProfile."
+    )
+    tone_override: Literal["casual", "technical", "hype"] | None = Field(
+        default=None, description="Legacy marketing field; use productProfile."
+    )
     blocked_terms: list[Annotated[ProductText, StringConstraints(min_length=1, max_length=120)]] = (
         Field(default_factory=list, max_length=80)
     )
@@ -105,6 +111,28 @@ class ProductRepositoryResponse(ApiSchema):
 class ProductWorkspaceResponse(ApiSchema):
     products: list[ProductResponse]
     product_repositories: list[ProductRepositoryResponse]
+
+
+class ProductOperatorSummary(ApiSchema):
+    product_id: UUID
+    product_name: str
+    ready: bool
+    blockers: list[str]
+    repository_ready: bool
+    website_status: Literal["not_connected", "healthy", "stale", "disconnected"]
+    search_status: Literal["not_connected", "healthy", "reduced", "stale", "disconnected"]
+    latest_run_id: UUID | None
+    latest_run_status: str | None
+    latest_plan_id: UUID | None
+    latest_plan_revision: int | None
+    open_action_count: int
+    awaiting_approval_count: int
+    next_schedule: datetime | None
+    next_setup_action: str | None
+
+
+class ProductOperatorSummaryList(ApiSchema):
+    items: list[ProductOperatorSummary]
 
 
 class ProductContextGenerationRequest(ApiSchema):

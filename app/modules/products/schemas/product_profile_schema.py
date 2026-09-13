@@ -6,7 +6,9 @@ from pydantic import Field, StringConstraints, field_validator
 
 from app.modules.products.enums.product_profile_enum import (
     ProductProfileAuditAction,
+    ProductProfileAuthority,
     ProductProfileConversionGoal,
+    ProductProfileReadinessBlockingReason,
     ProductProfileStatus,
 )
 from app.modules.products.policies.product_policy import validate_public_website_url
@@ -65,9 +67,23 @@ class ProductProfileVersionResponse(ProductProfileDraftWrite):
     updated_at: datetime
 
 
+class ProductProfileReadinessResponse(ApiSchema):
+    schema_version: Literal[1] = 1
+    profile_authority: ProductProfileAuthority = ProductProfileAuthority.approved_product_profile
+    draft_completeness_score: int = Field(ge=0, le=100)
+    draft_missing_fields: list[str]
+    approved_profile_id: UUID | None
+    approved_profile_version: int | None
+    profile_ready: bool
+    operator_enabled: bool
+    manual_run_available: bool
+    blocking_reasons: list[ProductProfileReadinessBlockingReason]
+
+
 class ProductProfileCurrentResponse(ApiSchema):
     draft: ProductProfileVersionResponse | None
     approved: ProductProfileVersionResponse | None
+    readiness: ProductProfileReadinessResponse
 
 
 class ProductProfileAuditEventResponse(ApiSchema):

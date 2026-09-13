@@ -24,3 +24,13 @@ class ProductProfileConversionGoal(StrEnum):
     contact = "contact"
     newsletter = "newsletter"
     retention = "retention"
+
+
+class ProductProfileAuthority(StrEnum):
+    approved_product_profile = "approved_product_profile"
+
+
+class ProductProfileReadinessBlockingReason(StrEnum):
+    approved_product_profile_required = "approved_product_profile_required"
+    operator_disabled = "operator_disabled"
+    manual_runs_disabled = "manual_runs_disabled"

@@ -38,7 +38,7 @@ def test_body_size_limit_rejects_large_requests(monkeypatch: MonkeyPatch) -> Non
     get_settings.cache_clear()
     client = TestClient(create_app())
 
-    response = client.post("/api/v1/auth/login", content="x" * 11)
+    response = client.post("/v1/auth/login", content="x" * 11)
 
     assert response.status_code == 413
     assert response.json()["code"] == "request_body_too_large"

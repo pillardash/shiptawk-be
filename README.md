@@ -39,25 +39,25 @@ docker compose up --build
 Health checks:
 
 - `GET /health`
-- `GET /api/v1/health`
-- `GET /api/v1/ready`
+- `GET /v1/health`
+- `GET /v1/ready`
 
 Auth endpoints:
 
-- `GET /api/v1/auth/me`
-- `GET /api/v1/auth/browser/providers`
-- `GET /api/v1/auth/browser/oauth/{provider}/authorize`
-- `GET /api/v1/auth/browser/oauth/{provider}/callback`
-- `GET /api/v1/auth/browser/session`
-- `POST /api/v1/auth/browser/refresh`
-- `POST /api/v1/auth/browser/logout`
-- `DELETE /api/v1/auth/browser/account`
-- `POST /api/v1/workspaces/{workspaceId}/github/installation`
-- `POST /api/v1/workspaces/{workspaceId}/repositories/sync`
-- `GET /api/v1/workspaces/{workspaceId}/repositories`
-- `PATCH /api/v1/workspaces/{workspaceId}/repositories/{repositoryId}/tracking`
-- `GET /api/v1/workspaces/{workspaceId}/github/installation`
-- `POST /api/v1/webhooks/github` (public, GitHub HMAC authenticated)
+- `GET /v1/auth/me`
+- `GET /v1/auth/browser/providers`
+- `GET /v1/auth/browser/oauth/{provider}/authorize`
+- `GET /v1/auth/browser/oauth/{provider}/callback`
+- `GET /v1/auth/browser/session`
+- `POST /v1/auth/browser/refresh`
+- `POST /v1/auth/browser/logout`
+- `DELETE /v1/auth/browser/account`
+- `POST /v1/workspaces/{workspaceId}/github/installation`
+- `POST /v1/workspaces/{workspaceId}/repositories/sync`
+- `GET /v1/workspaces/{workspaceId}/repositories`
+- `PATCH /v1/workspaces/{workspaceId}/repositories/{repositoryId}/tracking`
+- `GET /v1/workspaces/{workspaceId}/github/installation`
+- `POST /v1/webhooks/github` (public, GitHub HMAC authenticated)
 
 ## Test and Lint
 
@@ -101,9 +101,11 @@ For deployments, run migrations before starting the API process:
 
 Do not run migrations from FastAPI startup hooks. Keep schema changes as an explicit deployment step.
 
-In Coolify, configure `uv run alembic upgrade head` as the migration/pre-deploy command. Run it
-once per release before API replicas are replaced. The API container command must remain
-`./scripts/start.sh`; never run migrations in that command or once per replica.
+In Coolify, configure `./scripts/prestart.sh` as the pre-deploy command. The production image does
+not include the `uv` executable, so do not use `uv run alembic upgrade head` inside the runtime
+container. Run the pre-deploy command once per release before API replicas are replaced. The API
+container command must remain `./scripts/start.sh`; never run migrations in that command or once
+per replica.
 
 ## Deployment
 
@@ -123,6 +125,8 @@ Runtime settings:
 
 - `PORT` controls the container listening port. Default: `8000`.
 - `WORKERS` controls Uvicorn worker processes. Default: `1`.
+- `GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS` controls how long in-flight requests may finish after
+  Coolify sends `SIGTERM`. Default: `30`.
 - `FORWARDED_ALLOW_IPS` controls trusted proxy IPs for forwarded headers. Production rejects `*`.
 - `TRUSTED_PROXY_IPS` controls which proxy IPs may supply `X-Forwarded-For` for rate limiting and throttling.
 - `ALLOWED_HOSTS` must not contain `*` in production.
@@ -140,7 +144,7 @@ Runtime settings:
 Health endpoints:
 
 - `/health` is liveness and does not check dependencies.
-- `/api/v1/ready` is readiness and checks PostgreSQL.
+- `/v1/ready` is readiness and checks PostgreSQL.
 
 ## Database
 
@@ -212,6 +216,22 @@ Health endpoints:
 
 ### Coolify production environment
 
+Create a Dockerfile application in Coolify with the repository root set to this backend directory.
+Use these deployment settings:
+
+- Dockerfile: `Dockerfile`
+- Exposed container port: `8000`
+- Health check path: `/health`
+- Pre-deploy command: `./scripts/prestart.sh`
+- Start command: leave empty to use the image command `./scripts/start.sh`
+- Database: attach a Coolify-managed PostgreSQL resource and set its internal connection string as
+  `DATABASE_URL`, using the `postgresql+psycopg://` scheme
+- Readiness check after deployment: `/v1/ready`
+
+Do not expose the managed PostgreSQL port publicly. The application and database must share a
+Coolify network, and `DATABASE_URL` must use the database resource's internal hostname rather than
+`localhost`.
+
 For `app.shiptawk.com` and `api.shiptawk.com`, configure these exact values in Coolify in
 addition to the ordinary production database, JWT, storage, proxy, and cache settings:
 
@@ -250,11 +270,18 @@ integration, and never returns installation tokens. Newly discovered repositorie
 until an authenticated workspace member explicitly enables tracking.
 
 Set the GitHub OAuth callback URL to
-`https://api.shiptawk.com/api/v1/auth/browser/oauth/github/callback`. Local development keeps
+`https://api.shiptawk.com/v1/auth/browser/oauth/github/callback`. Local development keeps
 host-only insecure `Lax` cookies and uses `http://localhost:3000` by default.
 
+Set the Google Search Console OAuth callback exactly to
+`http://localhost:8000/v1/integrations/search/google/callback` for local development and
+`https://api.shiptawk.com/v1/integrations/search/google/callback` for production. The callback
+is backend-owned and returns a `307` to the validated, product-bound frontend `returnPath`, replacing
+any existing `search` query value with `connected`, `denied`, or `error`. The frontend must not host
+or exchange codes at a separate Search Console callback.
+
 Set the GitHub App webhook URL to the canonical production URL
-`https://api.shiptawk.com/api/v1/webhooks/github` and configure the exact same secret in GitHub
+`https://api.shiptawk.com/v1/webhooks/github` and configure the exact same secret in GitHub
 and `GITHUB_WEBHOOK_SECRET`. Generate the payload key independently with
 `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
 The endpoint authenticates the original bounded request bytes before parsing, stores supported
@@ -282,7 +309,7 @@ GENERATION_PROVIDER=openai
 OPENAI_API_KEY=<provider-key>
 ```
 
-Before setting `GITHUB_WEBHOOK_ENABLED=true`, run `uv run alembic upgrade head` as Coolify's single
+Before setting `GITHUB_WEBHOOK_ENABLED=true`, run `./scripts/prestart.sh` as Coolify's single
 pre-deploy migration command and confirm the `github_raw_events` and
 `github_raw_event_consumers` tables exist. Enable this endpoint only at the coordinated webhook
 authority cutover; do not leave the legacy Next.js webhook writing concurrently. Keep
@@ -346,3 +373,31 @@ Each product module creates only the responsibility packages it uses:
 ```
 
 Unused responsibility packages are not created. See `../architeture.md` for the dependency rules and module ownership map.
+# Browser OAuth
+
+Browser sign-in providers are enabled with `OAUTH_ENABLED_PROVIDERS` (for example,
+`google,github`). Google login uses the dedicated `GOOGLE_LOGIN_CLIENT_ID` and
+`GOOGLE_LOGIN_CLIENT_SECRET` credentials and this callback:
+
+`{PUBLIC_BACKEND_URL}{API_PREFIX}/auth/browser/oauth/google/callback`
+
+Register the exact callback in the Google OAuth client. Login requests only
+`openid email profile`; it does not request Search Console or offline access. Search Console is a
+separate integration configured with `GOOGLE_SEARCH_ENABLED`, `GOOGLE_SEARCH_CLIENT_ID`, and
+`GOOGLE_SEARCH_CLIENT_SECRET`, using
+`{PUBLIC_BACKEND_URL}{API_PREFIX}/integrations/search/google/callback`.
+
+OAuth accounts are keyed by provider and provider subject. Matching email addresses across Google
+and GitHub are intentionally not linked and create separate accounts.
+
+## Email workflow schedules
+
+The canonical weekly growth operator is the MVP scheduling authority. Its hourly due-product scan is
+controlled independently with `WEEKLY_GROWTH_SCHEDULE_ENABLED` and defaults to enabled. The
+event-driven `operator/weekly-growth.ready` email function remains registered regardless of that
+schedule gate so manual and already-enqueued runs can still deliver.
+
+The retained legacy schedules default to disabled and can be restored individually for rollback with
+`LEGACY_DAILY_DRAFT_SCHEDULE_ENABLED`, `LEGACY_ACHIEVEMENT_DIGEST_SCHEDULES_ENABLED`, and
+`LEGACY_REPOSITORY_CHANGELOG_SCHEDULES_ENABLED`. These flags change only Inngest function
+registration; the underlying delivery implementations and user-level preferences remain intact.

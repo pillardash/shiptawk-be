@@ -27,7 +27,7 @@ from app.modules.achievement_digests.services.delivery import (
 from app.modules.identity.models.users import User
 from app.modules.repos.models import repos
 from app.modules.workspaces.models import Workspace, WorkspaceMembership
-from app.services.email.base import EmailMessage
+from app.services.email.base import EmailMessage, EmailSendOutcomeUnknown
 from app.workflows.digests import AchievementDigestWorkflow
 
 
@@ -141,7 +141,7 @@ def test_list_digests_is_workspace_scoped_sendable_and_camel_case(
     user, workspace, _, digest_ids = client.portal.call(seed_digests, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/achievement-digests?limit=20",
+        f"/v1/workspaces/{workspace.id}/achievement-digests?limit=20",
         headers=auth_headers(user),
     )
 
@@ -179,7 +179,7 @@ def test_list_digests_hides_workspace_without_membership(
     user, _, other_workspace, _ = client.portal.call(seed_digests, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{other_workspace.id}/achievement-digests",
+        f"/v1/workspaces/{other_workspace.id}/achievement-digests",
         headers=auth_headers(user),
     )
 
@@ -194,7 +194,7 @@ def test_feedback_is_written_with_server_resolved_tenant_and_actor(
     user, workspace, _, digest_ids = client.portal.call(seed_digests, sessions)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/achievement-digests/{digest_ids[0]}/feedback",
+        f"/v1/workspaces/{workspace.id}/achievement-digests/{digest_ids[0]}/feedback",
         headers=auth_headers(user),
         json={"action": "useful", "metadata": {"surface": "dashboard"}},
     )
@@ -222,7 +222,7 @@ def test_feedback_cannot_target_digest_from_another_workspace(
     user, workspace, _, digest_ids = client.portal.call(seed_digests, sessions)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/achievement-digests/{digest_ids[2]}/feedback",
+        f"/v1/workspaces/{workspace.id}/achievement-digests/{digest_ids[2]}/feedback",
         headers=auth_headers(user),
         json={"action": "copied"},
     )
@@ -238,7 +238,7 @@ def test_feedback_rejects_oversized_metadata(
     user, workspace, _, digest_ids = client.portal.call(seed_digests, sessions)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/achievement-digests/{digest_ids[0]}/feedback",
+        f"/v1/workspaces/{workspace.id}/achievement-digests/{digest_ids[0]}/feedback",
         headers=auth_headers(user),
         json={"action": "useful", "metadata": {"note": "x" * 2001}},
     )
@@ -289,8 +289,9 @@ async def test_delivery_marks_sent_only_after_provider_neutral_sender_succeeds(
     deliveries: list[AchievementDigestDelivery] = []
 
     class FakeSender:
-        async def send(self, delivery: AchievementDigestDelivery) -> None:
+        async def send(self, delivery: AchievementDigestDelivery) -> str | None:
             deliveries.append(delivery)
+            return "provider-message-id"
 
     async with sessions() as db:
         sent = await deliver_stored_digest(
@@ -304,7 +305,7 @@ async def test_delivery_marks_sent_only_after_provider_neutral_sender_succeeds(
             sent_at=datetime(2026, 7, 22, 16, tzinfo=UTC),
         )
 
-    assert sent is True
+    assert sent == "delivered"
     assert deliveries[0].subject == "Weekly wins"
     async with sessions() as db:
         stored_sent_at = await db.scalar(
@@ -323,7 +324,7 @@ async def test_delivery_marks_sent_only_after_provider_neutral_sender_succeeds(
             unsubscribe_url="https://app.example.test/unsubscribe/token",
             sender=FakeSender(),
         )
-    assert sent_again is False
+    assert sent_again == "delivered"
     assert len(deliveries) == 1
 
 
@@ -335,20 +336,20 @@ async def test_delivery_is_recorded_before_send_so_retries_cannot_duplicate_an_a
     _, workspace, _, digest_ids = client.portal.call(seed_digests, sessions)
 
     class UncertainSender:
-        async def send(self, delivery: AchievementDigestDelivery) -> None:
-            raise RuntimeError("provider accepted email but connection closed")
+        async def send(self, delivery: AchievementDigestDelivery) -> str | None:
+            raise EmailSendOutcomeUnknown("provider accepted email but connection closed")
 
     async with sessions() as db:
-        with pytest.raises(RuntimeError, match="provider accepted email but connection closed"):
-            await deliver_stored_digest(
-                db,
-                workspace.id,
-                digest_ids[0],
-                recipient_email="digest@example.com",
-                dashboard_url="https://app.example.test/dashboard",
-                unsubscribe_url="https://app.example.test/unsubscribe/token",
-                sender=UncertainSender(),
-            )
+        outcome = await deliver_stored_digest(
+            db,
+            workspace.id,
+            digest_ids[0],
+            recipient_email="digest@example.com",
+            dashboard_url="https://app.example.test/dashboard",
+            unsubscribe_url="https://app.example.test/unsubscribe/token",
+            sender=UncertainSender(),
+        )
+    assert outcome == "unknown_outcome"
 
     async with sessions() as db:
         sent_again = await deliver_stored_digest(
@@ -363,8 +364,52 @@ async def test_delivery_is_recorded_before_send_so_retries_cannot_duplicate_an_a
         stored_sent_at = await db.scalar(
             select(achievement_digests.c.sent_at).where(achievement_digests.c.id == digest_ids[0])
         )
-    assert sent_again is False
-    assert stored_sent_at is not None
+    assert sent_again == "unknown_outcome"
+    assert stored_sent_at is None
+
+
+async def test_known_digest_send_failure_remains_retryable(
+    digest_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    client, sessions = digest_client
+    assert client.portal is not None
+    _, workspace, _, digest_ids = client.portal.call(seed_digests, sessions)
+
+    class RetryableSender:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def send(self, delivery: AchievementDigestDelivery) -> str | None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("provider rejected email")
+            return "provider-message-id"
+
+    sender = RetryableSender()
+    async with sessions() as db:
+        with pytest.raises(RuntimeError, match="provider rejected email"):
+            await deliver_stored_digest(
+                db,
+                workspace.id,
+                digest_ids[0],
+                recipient_email="digest@example.com",
+                dashboard_url="https://app.example.test/dashboard",
+                unsubscribe_url="https://app.example.test/unsubscribe/token",
+                sender=sender,
+            )
+    async with sessions() as db:
+        outcome = await deliver_stored_digest(
+            db,
+            workspace.id,
+            digest_ids[0],
+            recipient_email="digest@example.com",
+            dashboard_url="https://app.example.test/dashboard",
+            unsubscribe_url="https://app.example.test/unsubscribe/token",
+            sender=sender,
+        )
+
+    assert outcome == "delivered"
+    assert sender.attempts == 2
 
 
 def test_signed_unsubscribe_url_uses_the_configured_public_origin() -> None:
@@ -372,13 +417,13 @@ def test_signed_unsubscribe_url_uses_the_configured_public_origin() -> None:
 
     url = signed_unsubscribe_url(
         public_app_url="https://api.example.test",
-        api_prefix="/api/v1",
+        api_prefix="/v1",
         user_id=user_id,
         secret="notification-secret",
     )
 
     assert url == (
-        "https://api.example.test/api/v1/notifications/unsubscribe?"
+        "https://api.example.test/v1/notifications/unsubscribe?"
         "token=b6b44404-ba79-4432-a1a1-860d70ad5724."
         "5befb82e2b9f054fead1f5093c414b3b00144402dd55e1af61a232dc007ced10"
     )
@@ -407,6 +452,7 @@ async def test_email_adapter_uses_injected_service_without_live_calls() -> None:
     assert messages[0].to[0].email == "digest@example.com"
     assert "https://app.example.test/dashboard" in messages[0].text
     assert "https://app.example.test/unsubscribe/token" in messages[0].text
+    assert messages[0].html is not None
 
 
 async def test_digest_workflow_delivers_only_eligible_rows_and_counts_idempotent_skips(
@@ -426,7 +472,7 @@ async def test_digest_workflow_delivers_only_eligible_rows_and_counts_idempotent
         email_service=FakeEmailService(),
         frontend_url="https://app.example.test",
         public_app_url="https://api.example.test",
-        api_prefix="/api/v1",
+        api_prefix="/v1",
         unsubscribe_secret="notification-secret",
     )
 
@@ -439,7 +485,7 @@ async def test_digest_workflow_delivers_only_eligible_rows_and_counts_idempotent
     assert len(messages) == 2
     assert messages[0].to[0].email == "digest@example.com"
     assert "https://app.example.test/dashboard" in messages[0].text
-    assert "https://api.example.test/api/v1/notifications/unsubscribe?token=" in messages[0].text
+    assert "https://api.example.test/v1/notifications/unsubscribe?token=" in messages[0].text
     async with sessions() as db:
         sent_at = await db.scalar(
             select(achievement_digests.c.sent_at).where(achievement_digests.c.id == digest_ids[0])

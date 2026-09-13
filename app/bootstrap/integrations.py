@@ -4,6 +4,9 @@ from app.bootstrap.clients import SharedHTTPClients
 from app.core.config import Settings
 from app.modules.drafts.providers.protocols import CredentialDecryptor, Publisher
 from app.modules.drafts.providers.x import HttpXPublisher
+from app.modules.identity.providers.google_browser_oauth_provider import (
+    GoogleBrowserOAuthProvider,
+)
 from app.modules.integrations.providers.credential_vault_provider import (
     FernetIntegrationCredentialVault,
 )
@@ -41,6 +44,17 @@ def create_integrations(settings: Settings, clients: SharedHTTPClients) -> Integ
                 client_secret=settings.github_oauth_client_secret.get_secret_value(),
                 timeout_seconds=settings.oauth_http_timeout_seconds,
                 http_client=clients.github,
+            )
+        )
+    if "google" in settings.oauth_enabled_providers:
+        assert settings.google_login_client_id is not None
+        assert settings.google_login_client_secret is not None
+        oauth_providers.register(
+            GoogleBrowserOAuthProvider(
+                client_id=settings.google_login_client_id,
+                client_secret=settings.google_login_client_secret.get_secret_value(),
+                timeout_seconds=settings.oauth_http_timeout_seconds,
+                http_client=clients.search,
             )
         )
 

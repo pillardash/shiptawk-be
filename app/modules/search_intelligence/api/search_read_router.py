@@ -17,6 +17,7 @@ from app.modules.search_intelligence.schemas.search_read_schema import (
     SearchHealthResponse,
     SearchPagePageResponse,
     SearchQueryPageResponse,
+    SearchReadinessResponse,
 )
 from app.modules.search_intelligence.services.search_connection_service import (
     disconnect_product_source,
@@ -28,6 +29,7 @@ from app.modules.search_intelligence.services.search_read_service import (
     read_health,
     read_pages,
     read_queries,
+    read_readiness,
 )
 
 search_read_router = APIRouter(
@@ -122,6 +124,23 @@ async def get_search_health(
     db: DbDep,
 ) -> SearchHealthResponse:
     return await read_health(
+        db,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        actor_id=current_user.id,
+        capabilities=_capabilities(request),
+    )
+
+
+@search_read_router.get("/readiness", response_model=SearchReadinessResponse)
+async def get_search_readiness(
+    workspace_id: UUID,
+    product_id: UUID,
+    request: Request,
+    current_user: CurrentUserDep,
+    db: DbDep,
+) -> SearchReadinessResponse:
+    return await read_readiness(
         db,
         workspace_id=workspace_id,
         product_id=product_id,

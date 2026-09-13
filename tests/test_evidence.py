@@ -37,7 +37,7 @@ def evidence_client() -> Generator[tuple[TestClient, async_sessionmaker[AsyncSes
             await connection.run_sync(Base.metadata.drop_all)
 
     app = create_app()
-    app.include_router(evidence_router, prefix="/api/v1")
+    app.include_router(evidence_router, prefix="/v1")
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as client:
         assert client.portal is not None
@@ -118,7 +118,7 @@ def test_create_list_and_get_supported_evidence_with_safe_camel_case_contract(
     payload["productId"] = str(product.id)
 
     created = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence", headers=auth(user), json=payload
+        f"/v1/workspaces/{workspace.id}/evidence", headers=auth(user), json=payload
     )
 
     assert created.status_code == 201
@@ -133,10 +133,8 @@ def test_create_list_and_get_supported_evidence_with_safe_camel_case_contract(
     assert "rawPayload" not in body
     assert "credentials" not in body
 
-    listed = client.get(f"/api/v1/workspaces/{workspace.id}/evidence", headers=auth(user))
-    fetched = client.get(
-        f"/api/v1/workspaces/{workspace.id}/evidence/{body['id']}", headers=auth(user)
-    )
+    listed = client.get(f"/v1/workspaces/{workspace.id}/evidence", headers=auth(user))
+    fetched = client.get(f"/v1/workspaces/{workspace.id}/evidence/{body['id']}", headers=auth(user))
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()["items"]] == [body["id"]]
     assert fetched.status_code == 200
@@ -152,7 +150,7 @@ def test_read_only_roles_cannot_create_evidence(
     user, workspace, _, _ = client.portal.call(seed_workspace, sessions, role)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence",
+        f"/v1/workspaces/{workspace.id}/evidence",
         headers=auth(user),
         json={
             "evidenceType": "manual_note",
@@ -207,7 +205,7 @@ def test_evidence_input_rejects_missing_or_unsafe_url_provenance(
     user, workspace, _, _ = client.portal.call(seed_workspace, sessions)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence", headers=auth(user), json=payload
+        f"/v1/workspaces/{workspace.id}/evidence", headers=auth(user), json=payload
     )
 
     assert response.status_code == 422
@@ -221,7 +219,7 @@ def test_evidence_access_hides_cross_workspace_and_cross_product_resources(
     user, workspace, other_workspace, product = client.portal.call(seed_workspace, sessions)
     headers = auth(user)
     created = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence",
+        f"/v1/workspaces/{workspace.id}/evidence",
         headers=headers,
         json={
             "evidenceType": "manual_note",
@@ -232,10 +230,10 @@ def test_evidence_access_hides_cross_workspace_and_cross_product_resources(
     ).json()
 
     hidden = client.get(
-        f"/api/v1/workspaces/{other_workspace.id}/evidence/{created['id']}", headers=headers
+        f"/v1/workspaces/{other_workspace.id}/evidence/{created['id']}", headers=headers
     )
     bad_product = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence",
+        f"/v1/workspaces/{workspace.id}/evidence",
         headers=headers,
         json={
             "evidenceType": "manual_note",
@@ -289,7 +287,7 @@ def test_review_roles_approve_or_reject_with_auditable_provenance(
 
     item = client.portal.call(add_pending)
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence/{item.id}/approve",
+        f"/v1/workspaces/{workspace.id}/evidence/{item.id}/approve",
         headers=auth(user),
         json={"reason": "Source and wording verified."},
     )
@@ -329,17 +327,17 @@ def test_reject_requires_reason_and_prevents_invalid_second_decision(
 
     item = client.portal.call(add_pending)
     missing_reason = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence/{item.id}/reject",
+        f"/v1/workspaces/{workspace.id}/evidence/{item.id}/reject",
         headers=auth(user),
         json={"reason": ""},
     )
     rejected = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence/{item.id}/reject",
+        f"/v1/workspaces/{workspace.id}/evidence/{item.id}/reject",
         headers=auth(user),
         json={"reason": "Customer consent is not recorded."},
     )
     repeated = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence/{item.id}/approve",
+        f"/v1/workspaces/{workspace.id}/evidence/{item.id}/approve",
         headers=auth(user),
         json={"reason": "Changed mind."},
     )
@@ -405,7 +403,7 @@ def test_list_claims_returns_only_tenant_claims_with_linked_evidence_excerpts(
             await db.commit()
 
     client.portal.call(add_claims)
-    response = client.get(f"/api/v1/workspaces/{workspace.id}/claims", headers=auth(user))
+    response = client.get(f"/v1/workspaces/{workspace.id}/claims", headers=auth(user))
 
     assert response.status_code == 200
     assert len(response.json()["items"]) == 1
@@ -442,9 +440,7 @@ def test_expired_evidence_reports_expired_freshness_without_mutating_review_stat
             return item
 
     item = client.portal.call(add_expired)
-    response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/evidence/{item.id}", headers=auth(user)
-    )
+    response = client.get(f"/v1/workspaces/{workspace.id}/evidence/{item.id}", headers=auth(user))
 
     assert response.status_code == 200
     assert response.json()["status"] == "approved"
@@ -481,10 +477,8 @@ def test_viewers_receive_only_safe_metadata_for_sensitive_evidence(
             return item
 
     item = client.portal.call(add_sensitive_evidence)
-    listed = client.get(f"/api/v1/workspaces/{workspace.id}/evidence", headers=auth(user))
-    fetched = client.get(
-        f"/api/v1/workspaces/{workspace.id}/evidence/{item.id}", headers=auth(user)
-    )
+    listed = client.get(f"/v1/workspaces/{workspace.id}/evidence", headers=auth(user))
+    fetched = client.get(f"/v1/workspaces/{workspace.id}/evidence/{item.id}", headers=auth(user))
 
     assert listed.status_code == fetched.status_code == 200
     for response in (listed.json()["items"][0], fetched.json()):
@@ -521,7 +515,7 @@ def test_cookie_authenticated_evidence_mutation_requires_csrf(
         "access_token", create_access_token(str(user.id), session_id=str(session.id)), path="/"
     )
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/evidence",
+        f"/v1/workspaces/{workspace.id}/evidence",
         json={
             "evidenceType": "manual_note",
             "title": "Cookie write",

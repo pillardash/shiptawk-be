@@ -1,7 +1,11 @@
+import hashlib
+import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +38,8 @@ from app.modules.drafts.providers.protocols import (
 )
 from app.modules.integrations.models import IntegrationConnection
 from app.modules.integrations.providers.credential_vault_provider import CredentialVaultError
+from app.modules.operator.models import PreparedAsset
+from app.modules.operator.schemas.ai_output_schema import XDraft
 from app.modules.workspaces.enums import WorkspaceRole
 from app.modules.workspaces.services import require_active_workspace_role
 from app.shared.exceptions import (
@@ -372,6 +378,290 @@ async def publish_draft(
     await _commit(db)
     posted = await _current_draft(db, workspace_id, draft_id)
     return _publish_receipt(posted, idempotency_key, result.url, already_posted=False)
+
+
+def _publication_fingerprint(draft_id: UUID, asset_id: UUID, revision: int) -> str:
+    payload = json.dumps(
+        {"assetId": str(asset_id), "draftId": str(draft_id), "revision": revision},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _publication_command_result(
+    *,
+    draft_id: UUID,
+    asset_id: UUID,
+    revision: int,
+    idempotency_key: str,
+    original_outcome: Literal["success", "failed", "unknown"],
+    replay: bool = False,
+    receipt: Mapping[str, object] | None = None,
+    error_code: str | None = None,
+) -> dict[str, object]:
+    receipt = receipt or {}
+    return {
+        "draft_id": draft_id,
+        "asset_id": asset_id,
+        "revision": revision,
+        "outcome": "replay" if replay else original_outcome,
+        "original_outcome": original_outcome,
+        "provider": "x",
+        "provider_post_id": receipt.get("providerPostId"),
+        "url": receipt.get("url"),
+        "idempotency_key": idempotency_key,
+        "error_code": error_code,
+    }
+
+
+async def approve_and_publish_draft_revision(
+    db: AsyncSession,
+    *,
+    workspace_id: UUID,
+    draft_id: UUID,
+    asset_id: UUID,
+    revision: int,
+    actor_id: UUID,
+    idempotency_key: str,
+    publisher: Publisher,
+    credential_decryptor: CredentialDecryptor,
+) -> dict[str, object]:
+    """Approve and publish one immutable operator X asset through the draft authority."""
+    await _require_role(
+        db,
+        workspace_id,
+        actor_id,
+        PUBLISH_ROLES,
+        forbidden_message="Draft publishing requires an owner or admin role.",
+        forbidden_code="draft_publish_forbidden",
+    )
+    key = idempotency_key.strip()
+    fingerprint = _publication_fingerprint(draft_id, asset_id, revision)
+    attempt = (
+        (
+            await db.execute(
+                select(publication_attempts).where(
+                    publication_attempts.c.workspace_id == workspace_id,
+                    publication_attempts.c.command_id == key,
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if attempt is not None:
+        if attempt["payload_fingerprint"] != fingerprint:
+            raise ConflictError(
+                "Idempotency key was used with another publication payload.",
+                code="publication_idempotency_conflict",
+            )
+        status = attempt["status"]
+        original: Literal["success", "failed", "unknown"] = (
+            "success" if status == "completed" else "failed" if status == "failed" else "unknown"
+        )
+        return _publication_command_result(
+            draft_id=draft_id,
+            asset_id=asset_id,
+            revision=revision,
+            idempotency_key=key,
+            original_outcome=original,
+            replay=True,
+            receipt=attempt["provider_receipt"],
+            error_code=attempt["error_category"],
+        )
+
+    draft = await _lock_draft(db, workspace_id, draft_id)
+    asset = await db.scalar(
+        select(PreparedAsset).where(
+            PreparedAsset.workspace_id == workspace_id,
+            PreparedAsset.id == asset_id,
+            PreparedAsset.revision == revision,
+            PreparedAsset.kind == "x_draft",
+        )
+    )
+    try:
+        asset_content = (
+            TypeAdapter(XDraft).validate_python(asset.structured_content).content.post
+            if asset is not None
+            else None
+        )
+    except ValidationError:
+        asset_content = None
+    if (
+        asset is None
+        or draft["prepared_asset_id"] != asset_id
+        or draft["prepared_asset_revision"] != revision
+        or draft["content"] != asset_content
+    ):
+        await db.rollback()
+        raise ConflictError(
+            "Draft does not match the requested exact X asset revision.",
+            code="draft_revision_conflict",
+        )
+    if draft["status"] == DraftStatus.posted.value:
+        await db.rollback()
+        raise ConflictError(
+            "This exact draft revision was already published by another command.",
+            code="draft_already_published",
+        )
+    if draft["status"] != DraftStatus.approved.value:
+        ensure_approvable(draft["status"])
+        now = datetime.now(UTC)
+        await db.execute(
+            update(drafts)
+            .where(drafts.c.workspace_id == workspace_id, drafts.c.id == draft_id)
+            .values(status=DraftStatus.approved.value, approved_at=now, updated_at=now)
+        )
+        await _add_status(db, draft, actor_id, DraftStatus.approved)
+        await _add_feedback(db, draft, actor_id, "approved", content_after=draft["content"])
+
+    await db.execute(
+        insert(publication_attempts).values(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            command_id=key,
+            payload_fingerprint=fingerprint,
+            status="pending",
+            provider="x",
+        )
+    )
+    await _commit(db)
+
+    connection = await db.scalar(
+        select(IntegrationConnection)
+        .where(
+            IntegrationConnection.workspace_id == workspace_id,
+            IntegrationConnection.provider.in_(("x", "twitter")),
+            IntegrationConnection.status == "active",
+            IntegrationConnection.deleted_at.is_(None),
+        )
+        .order_by(IntegrationConnection.updated_at.desc(), IntegrationConnection.id.desc())
+        .limit(1)
+    )
+    error_code: str | None = None
+    credentials: Any = None
+    if connection is None:
+        error_code = "x_connection_required"
+    elif "tweet.write" not in connection.scopes:
+        error_code = "x_write_scope_required"
+    elif connection.credentials_ciphertext is None or connection.credential_key_version is None:
+        error_code = "x_credentials_unavailable"
+    else:
+        try:
+            credentials = credential_decryptor.decrypt(
+                connection.credentials_ciphertext, connection.credential_key_version
+            )
+        except (CredentialDecryptionError, CredentialVaultError):
+            error_code = "x_credentials_unavailable"
+    if error_code is not None:
+        await db.execute(
+            update(publication_attempts)
+            .where(
+                publication_attempts.c.workspace_id == workspace_id,
+                publication_attempts.c.command_id == key,
+            )
+            .values(status="failed", error_category=error_code, completed_at=datetime.now(UTC))
+        )
+        await _commit(db)
+        return _publication_command_result(
+            draft_id=draft_id,
+            asset_id=asset_id,
+            revision=revision,
+            idempotency_key=key,
+            original_outcome="failed",
+            error_code=error_code,
+        )
+
+    provider_key = f"x:publication:{workspace_id}:{hashlib.sha256(key.encode()).hexdigest()}"
+    try:
+        result = await publisher.publish(
+            PublishRequest(
+                content=draft["content"], credentials=credentials, idempotency_key=provider_key
+            )
+        )
+    except PublisherTransientError:
+        await db.execute(
+            update(publication_attempts)
+            .where(
+                publication_attempts.c.workspace_id == workspace_id,
+                publication_attempts.c.command_id == key,
+            )
+            .values(status="unknown_outcome", error_category="publisher_unknown_outcome")
+        )
+        await _commit(db)
+        return _publication_command_result(
+            draft_id=draft_id,
+            asset_id=asset_id,
+            revision=revision,
+            idempotency_key=key,
+            original_outcome="unknown",
+            error_code="publisher_unknown_outcome",
+        )
+    except PublisherPermanentError:
+        await db.execute(
+            update(publication_attempts)
+            .where(
+                publication_attempts.c.workspace_id == workspace_id,
+                publication_attempts.c.command_id == key,
+            )
+            .values(
+                status="failed",
+                error_category="publisher_rejected",
+                completed_at=datetime.now(UTC),
+            )
+        )
+        await _commit(db)
+        return _publication_command_result(
+            draft_id=draft_id,
+            asset_id=asset_id,
+            revision=revision,
+            idempotency_key=key,
+            original_outcome="failed",
+            error_code="publisher_rejected",
+        )
+
+    now = datetime.now(UTC)
+    receipt = {"providerPostId": result.provider_post_id, "url": result.url}
+    await db.execute(
+        update(drafts)
+        .where(drafts.c.workspace_id == workspace_id, drafts.c.id == draft_id)
+        .values(
+            status=DraftStatus.posted.value,
+            posted_at=now,
+            tweet_id=result.provider_post_id,
+            posting_started_at=None,
+            updated_at=now,
+        )
+    )
+    await _add_status(db, draft, actor_id, DraftStatus.posted)
+    await _add_feedback(
+        db,
+        draft,
+        actor_id,
+        "posted",
+        content_after=draft["content"],
+        provider_post_id=result.provider_post_id,
+        metadata={"provider": "x", "url": result.url, "idempotencyKey": key},
+    )
+    await db.execute(
+        update(publication_attempts)
+        .where(
+            publication_attempts.c.workspace_id == workspace_id,
+            publication_attempts.c.command_id == key,
+        )
+        .values(status="completed", provider_receipt=receipt, completed_at=now)
+    )
+    await _commit(db)
+    return _publication_command_result(
+        draft_id=draft_id,
+        asset_id=asset_id,
+        revision=revision,
+        idempotency_key=key,
+        original_outcome="success",
+        receipt=receipt,
+    )
 
 
 async def edit_draft_content(

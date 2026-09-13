@@ -193,7 +193,7 @@ def test_product_endpoint_requires_active_membership_and_excludes_persistence_fi
     user, workspace, _, product = client.portal.call(seed_product, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}",
         headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
     )
 
@@ -234,7 +234,7 @@ def test_product_workspace_endpoint_returns_ordered_tenant_safe_aggregate(
     user, workspace, first, second = client.portal.call(seed_product_workspace, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/products",
+        f"/v1/workspaces/{workspace.id}/products",
         headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
     )
 
@@ -270,8 +270,8 @@ def test_product_workspace_endpoint_hides_inactive_and_unknown_workspaces(
     client.portal.call(deactivate_membership)
     headers = {"Authorization": f"Bearer {create_access_token(str(user.id))}"}
 
-    inactive = client.get(f"/api/v1/workspaces/{workspace.id}/products", headers=headers)
-    unknown = client.get(f"/api/v1/workspaces/{uuid4()}/products", headers=headers)
+    inactive = client.get(f"/v1/workspaces/{workspace.id}/products", headers=headers)
+    unknown = client.get(f"/v1/workspaces/{uuid4()}/products", headers=headers)
 
     assert inactive.status_code == unknown.status_code == 404
     for response in (inactive, unknown):
@@ -304,7 +304,7 @@ def test_product_endpoint_accepts_browser_cookie_session(
         "access_token", create_access_token(str(user.id), session_id=str(session.id))
     )
 
-    response = client.get(f"/api/v1/workspaces/{workspace.id}/products/{product.id}")
+    response = client.get(f"/v1/workspaces/{workspace.id}/products/{product.id}")
 
     assert response.status_code == 200
 
@@ -318,7 +318,7 @@ def test_invalid_bearer_never_falls_back_to_valid_browser_cookie(
     client.cookies.set("access_token", create_access_token(str(user.id)))
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}",
         headers={"Authorization": "Bearer invalid"},
     )
 
@@ -337,7 +337,7 @@ def test_product_endpoint_returns_same_404_for_cross_workspace_and_missing_resou
     product_id = product.id if resource == "workspace" else uuid4()
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace_id}/products/{product_id}",
+        f"/v1/workspaces/{workspace_id}/products/{product_id}",
         headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
     )
 
@@ -490,7 +490,7 @@ def test_authorized_workspace_roles_can_create_products(
     user, workspace, *_ = client.portal.call(seed_product_commands, sessions, role)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products",
+        f"/v1/workspaces/{workspace.id}/products",
         headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
         json=product_payload(),
     )
@@ -511,7 +511,7 @@ def test_read_only_workspace_roles_cannot_create_products(
     user, workspace, *_ = client.portal.call(seed_product_commands, sessions, role)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products",
+        f"/v1/workspaces/{workspace.id}/products",
         headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
         json=product_payload(),
     )
@@ -540,7 +540,7 @@ def test_product_write_preserves_frontend_validation_and_public_website_rules(
     user, workspace, *_ = client.portal.call(seed_product_commands, sessions)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products",
+        f"/v1/workspaces/{workspace.id}/products",
         headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
         json=product_payload(**changes),
     )
@@ -584,18 +584,16 @@ def test_update_and_delete_product_are_tenant_authorized_and_transactional(
     run_id = client.portal.call(add_product_history)
 
     hidden = client.put(
-        f"/api/v1/workspaces/{other_workspace.id}/products/{first.id}",
+        f"/v1/workspaces/{other_workspace.id}/products/{first.id}",
         headers=headers,
         json=product_payload(name="Hidden update"),
     )
     updated = client.put(
-        f"/api/v1/workspaces/{workspace.id}/products/{first.id}",
+        f"/v1/workspaces/{workspace.id}/products/{first.id}",
         headers=headers,
         json=product_payload(name="Updated", websiteUrl=""),
     )
-    deleted = client.delete(
-        f"/api/v1/workspaces/{workspace.id}/products/{first.id}", headers=headers
-    )
+    deleted = client.delete(f"/v1/workspaces/{workspace.id}/products/{first.id}", headers=headers)
 
     assert hidden.status_code == 404
     assert hidden.json()["code"] == "product_not_found"
@@ -605,7 +603,7 @@ def test_update_and_delete_product_are_tenant_authorized_and_transactional(
     assert deleted.status_code == 204
     assert (
         client.get(
-            f"/api/v1/workspaces/{workspace.id}/products/{first.id}", headers=headers
+            f"/v1/workspaces/{workspace.id}/products/{first.id}", headers=headers
         ).status_code
         == 404
     )
@@ -630,12 +628,12 @@ def test_repository_assignment_enforces_tracking_uniqueness_primary_and_move_rul
     headers = {"Authorization": f"Bearer {create_access_token(str(user.id))}"}
 
     untracked = client.put(
-        f"/api/v1/workspaces/{workspace.id}/products/{second.id}/repositories/{untracked_repo_id}",
+        f"/v1/workspaces/{workspace.id}/products/{second.id}/repositories/{untracked_repo_id}",
         headers=headers,
         json={"repoRole": "infra", "isPrimaryRepo": False},
     )
     moved = client.put(
-        f"/api/v1/workspaces/{workspace.id}/products/{second.id}/repositories/{moving_repo_id}",
+        f"/v1/workspaces/{workspace.id}/products/{second.id}/repositories/{moving_repo_id}",
         headers=headers,
         json={"repoRole": "worker", "isPrimaryRepo": True},
     )
@@ -676,17 +674,17 @@ def test_repository_primary_switch_removal_and_role_description_commands(
     headers = {"Authorization": f"Bearer {create_access_token(str(user.id))}"}
 
     primary = client.put(
-        f"/api/v1/workspaces/{workspace.id}/products/{first.id}/repositories/{moving_repo_id}",
+        f"/v1/workspaces/{workspace.id}/products/{first.id}/repositories/{moving_repo_id}",
         headers=headers,
         json={"repoRole": "frontend", "isPrimaryRepo": True},
     )
     described = client.patch(
-        f"/api/v1/workspaces/{workspace.id}/products/{first.id}/repositories/{moving_repo_id}/role-description",
+        f"/v1/workspaces/{workspace.id}/products/{first.id}/repositories/{moving_repo_id}/role-description",
         headers=headers,
         json={"roleDescriptionOverride": "Owns the public application."},
     )
     removed = client.delete(
-        f"/api/v1/workspaces/{workspace.id}/products/{first.id}/repositories/{moving_repo_id}",
+        f"/v1/workspaces/{workspace.id}/products/{first.id}/repositories/{moving_repo_id}",
         headers=headers,
     )
 
@@ -726,7 +724,7 @@ def test_repository_commands_hide_cross_workspace_resources(
     )
 
     response = client.put(
-        f"/api/v1/workspaces/{other_workspace.id}/products/{first.id}/repositories/{moving_repo_id}",
+        f"/v1/workspaces/{other_workspace.id}/products/{first.id}/repositories/{moving_repo_id}",
         headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
         json={"repoRole": "backend", "isPrimaryRepo": False},
     )
@@ -771,17 +769,17 @@ def test_product_context_generation_is_tenant_scoped_idempotent_and_persisted(
     headers = {"Authorization": f"Bearer {create_access_token(str(user.id))}"}
 
     first = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/context-generation",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/context-generation",
         headers=headers,
         json=payload,
     )
     replay = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/context-generation",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/context-generation",
         headers=headers,
         json=payload,
     )
     hidden = client.post(
-        f"/api/v1/workspaces/{other_workspace.id}/products/{product.id}/context-generation",
+        f"/v1/workspaces/{other_workspace.id}/products/{product.id}/context-generation",
         headers=headers,
         json={**payload, "idempotencyKey": "product-context:hidden"},
     )

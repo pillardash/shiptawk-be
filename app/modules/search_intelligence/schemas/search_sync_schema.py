@@ -1,12 +1,20 @@
 from datetime import date, datetime
-from typing import Literal
 from uuid import UUID
 
+from pydantic import Field
+
+from app.modules.search_intelligence.enums.search_intelligence_enum import (
+    SearchSyncStatus,
+    SearchSyncTrigger,
+)
 from app.shared.schemas import ApiSchema
 
 
 class SearchSyncRequest(ApiSchema):
-    trigger: Literal["manual", "scheduled"] = "manual"
+    trigger: str = Field(
+        default=SearchSyncTrigger.manual.value,
+        json_schema_extra={"enum": [SearchSyncTrigger.manual.value]},
+    )
 
 
 class SearchSyncRunResponse(ApiSchema):
@@ -14,8 +22,8 @@ class SearchSyncRunResponse(ApiSchema):
     workspace_id: UUID
     product_id: UUID
     source_id: UUID
-    trigger: str
-    status: str
+    trigger: SearchSyncTrigger
+    status: SearchSyncStatus
     requested_start_date: date
     requested_end_date: date
     progress_date: date | None
@@ -32,4 +40,8 @@ class SearchSyncRunResponse(ApiSchema):
     updated_at: datetime
 
 
-__all__ = ["SearchSyncRequest", "SearchSyncRunResponse"]
+class SearchSyncRunListResponse(ApiSchema):
+    items: list[SearchSyncRunResponse]
+
+
+__all__ = ["SearchSyncRequest", "SearchSyncRunListResponse", "SearchSyncRunResponse"]

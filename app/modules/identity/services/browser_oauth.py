@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import select, text, update
+from sqlalchemy import exists, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -198,7 +198,7 @@ async def provision_oauth_session(
 
 async def get_bound_session(
     db: AsyncSession, *, user_id: UUID, session_id: UUID
-) -> tuple[User, Workspace, WorkspaceRole, list[str]]:
+) -> tuple[User, Workspace, WorkspaceRole, list[str], OAuthIdentity | None]:
     auth_row = (
         await db.execute(
             select(User, AuthSession)
@@ -230,7 +230,59 @@ async def get_bound_session(
             .order_by(OAuthIdentity.provider)
         )
     )
-    return auth_row.User, workspace, role, providers
+    primary_identity = await db.scalar(
+        select(OAuthIdentity)
+        .where(OAuthIdentity.user_id == user_id, OAuthIdentity.deleted_at.is_(None))
+        .order_by(OAuthIdentity.created_at, OAuthIdentity.id)
+        .limit(1)
+    )
+    return auth_row.User, workspace, role, providers, primary_identity
+
+
+async def list_available_workspaces(
+    db: AsyncSession, user_id: UUID
+) -> list[tuple[Workspace, WorkspaceRole]]:
+    rows = await db.execute(
+        select(Workspace, WorkspaceMembership.role)
+        .join(WorkspaceMembership, WorkspaceMembership.workspace_id == Workspace.id)
+        .where(
+            WorkspaceMembership.user_id == user_id,
+            WorkspaceMembership.is_active.is_(True),
+            Workspace.deleted_at.is_(None),
+        )
+        .order_by(WorkspaceMembership.created_at, Workspace.id)
+    )
+    return [(row.Workspace, row.role) for row in rows]
+
+
+async def switch_session_workspace(
+    db: AsyncSession, *, user_id: UUID, session_id: UUID, workspace_id: UUID
+) -> tuple[User, Workspace, WorkspaceRole, list[str], OAuthIdentity | None]:
+    membership_exists = exists().where(
+        WorkspaceMembership.workspace_id == workspace_id,
+        Workspace.id == WorkspaceMembership.workspace_id,
+        Workspace.deleted_at.is_(None),
+        WorkspaceMembership.user_id == user_id,
+        WorkspaceMembership.is_active.is_(True),
+    )
+    updated_id = await db.scalar(
+        update(AuthSession)
+        .where(
+            AuthSession.id == session_id,
+            AuthSession.user_id == user_id,
+            AuthSession.revoked_at.is_(None),
+            AuthSession.deleted_at.is_(None),
+            AuthSession.expires_at > datetime.now(UTC),
+            membership_exists,
+        )
+        .values(current_workspace_id=workspace_id)
+        .returning(AuthSession.id)
+    )
+    if updated_id is None:
+        await db.rollback()
+        raise ForbiddenError("Workspace access denied.", code="workspace_access_denied")
+    await db.commit()
+    return await get_bound_session(db, user_id=user_id, session_id=session_id)
 
 
 async def delete_user_account(db: AsyncSession, user: User) -> None:

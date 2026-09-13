@@ -139,6 +139,8 @@ def test_nullable_indexability_and_semantically_ordered_headings_survive_canonic
                             "url": "https://example.test",
                             "indexable": None,
                             "headings": ["Second", "First"],
+                            "page_type": "product",
+                            "internal_links": ["https://example.test/signup"],
                         }
                     ]
                 }
@@ -151,6 +153,10 @@ def test_nullable_indexability_and_semantically_ordered_headings_survive_canonic
 
     assert payload["website"]["pages"][0]["indexable"] is None  # type: ignore[index]
     assert payload["website"]["pages"][0]["headings"] == ["Second", "First"]  # type: ignore[index]
+    assert payload["website"]["pages"][0]["page_type"] == "product"  # type: ignore[index]
+    assert payload["website"]["pages"][0]["internal_links"] == [  # type: ignore[index]
+        "https://example.test/signup"
+    ]
 
 
 @pytest.mark.parametrize(

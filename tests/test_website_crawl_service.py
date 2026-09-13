@@ -149,6 +149,15 @@ async def test_crawl_service_discovers_sitemap_and_links_and_replays_idempotentl
         mappings = list(await db.scalars(select(WebsiteCapabilityMapping)))
     assert run is not None and run.status == WebsiteCrawlRunStatus.succeeded
     assert run.pages_discovered == run.pages_succeeded == 2
+    assert run.summary == {
+        "pagesSucceeded": 2,
+        "pagesFailed": 0,
+        "discoveryMethod": "sitemap_and_links",
+        "sitemapUrlsAttempted": 1,
+        "sitemapUrlsSucceeded": 1,
+        "sitemapPagesDiscovered": 1,
+        "sitemapFallbackUsed": False,
+    }
     assert source is not None and source.last_successful_crawl_at is not None
     assert [page.url for page in pages] == ["https://example.com/", "https://example.com/features"]
     assert len(results) == 2

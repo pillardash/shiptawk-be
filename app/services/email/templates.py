@@ -1,46 +1,37 @@
-from html import escape
-
 from app.services.email.base import EmailContent
+from app.services.email.rendering import render_email
 
 
 def email_verification_template(verification_url: str) -> EmailContent:
-    escaped_url = escape(verification_url, quote=True)
-    return EmailContent(
+    return render_email(
         subject="Verify your email address",
-        text=(
-            "Verify your email address by opening this link:\n\n"
-            f"{verification_url}\n\n"
-            "If you did not request this, you can ignore this email."
-        ),
-        html=(
-            "<p>Verify your email address by opening this link:</p>"
-            f'<p><a href="{escaped_url}">Verify email</a></p>'
-            "<p>If you did not request this, you can ignore this email.</p>"
-        ),
+        preheader="Verify your email address to finish setting up your account.",
+        heading="Verify your email address",
+        body="Finish setting up your account by confirming your email address.",
+        action_label="Verify email",
+        action_url=verification_url,
+        footer="If you did not request this, you can ignore this email.",
     )
 
 
 def password_reset_template(reset_url: str) -> EmailContent:
-    escaped_url = escape(reset_url, quote=True)
-    return EmailContent(
+    return render_email(
         subject="Reset your password",
-        text=(
-            "Reset your password by opening this link:\n\n"
-            f"{reset_url}\n\n"
-            "If you did not request this, you can ignore this email."
-        ),
-        html=(
-            "<p>Reset your password by opening this link:</p>"
-            f'<p><a href="{escaped_url}">Reset password</a></p>'
-            "<p>If you did not request this, you can ignore this email.</p>"
-        ),
+        preheader="Use this secure link to reset your password.",
+        heading="Reset your password",
+        body="We received a request to reset your password.",
+        action_label="Reset password",
+        action_url=reset_url,
+        footer="If you did not request this, you can ignore this email.",
     )
 
 
 def invite_user_template(invite_url: str) -> EmailContent:
-    escaped_url = escape(invite_url, quote=True)
-    return EmailContent(
+    return render_email(
         subject="You have been invited",
-        text=f"Accept your invitation by opening this link:\n\n{invite_url}",
-        html=f'<p>Accept your invitation:</p><p><a href="{escaped_url}">Accept invite</a></p>',
+        preheader="Accept your invitation to join the workspace.",
+        heading="You have been invited",
+        body="You have been invited to join a workspace.",
+        action_label="Accept invite",
+        action_url=invite_url,
     )

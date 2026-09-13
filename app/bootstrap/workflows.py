@@ -99,9 +99,9 @@ def create_workflows(
             frontend_url=settings.frontend_url,
             public_app_url=settings.public_backend_url,
             api_prefix=settings.api_v1_prefix,
-            unsubscribe_secret=settings.jwt_secret_key,
+            unsubscribe_secret=settings.token_encryption_key.get_secret_value(),
         )
-        if email_service is not None
+        if email_service is not None and settings.token_encryption_key is not None
         else None
     )
     functions = create_workflow_functions(
@@ -111,7 +111,7 @@ def create_workflows(
         digests=digest_workflow,
         website_crawls=WebsiteCrawlService(
             sessions=sessions,
-            provider=HTTPXWebsiteFetchProvider(http_client=clients.website),
+            provider=HTTPXWebsiteFetchProvider(),
         ),
         search_syncs=(
             SearchSyncService(
@@ -144,6 +144,14 @@ def create_workflows(
             else None
         ),
         measurement_followup=MeasurementFollowupWorkflow(sessions=sessions),
+        legacy_daily_draft_schedule_enabled=settings.legacy_daily_draft_schedule_enabled,
+        legacy_achievement_digest_schedules_enabled=(
+            settings.legacy_achievement_digest_schedules_enabled
+        ),
+        legacy_repository_changelog_schedules_enabled=(
+            settings.legacy_repository_changelog_schedules_enabled
+        ),
+        weekly_growth_schedule_enabled=settings.weekly_growth_schedule_enabled,
     )
     return WorkflowResources(
         inngest=client,

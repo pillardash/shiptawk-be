@@ -9,13 +9,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.outbox import OutboxMetadata, enqueue_outbox_event
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.operator.models import (
     ActionEvent,
     ActionRiskReview,
     ApprovalRequest,
     MarketingPlan,
     MeasurementWindow,
+    OperatorCommandReceipt,
     OperatorRecommendation,
+    OperatorRecommendationDecision,
     OperatorRun,
     Opportunity,
     OpportunityEvaluation,
@@ -32,7 +35,80 @@ from app.modules.operator.policies.weekly_growth_policy import (
     transition_plan,
 )
 from app.modules.operator.repositories import weekly_growth_repository as repository
-from app.modules.operator.schemas.ai_output_schema import PreparedAssetOutput
+from app.modules.operator.schemas.ai_output_schema import (
+    PreparedAssetOutput,
+    Recommendation,
+    RecommendationOutput,
+)
+from app.modules.operator.schemas.opportunity_detection_schema import DetectionInput
+from app.modules.products.models import Product
+from app.modules.products.services.activation_service import require_operator_run_ready
+
+
+class CommandIdempotencyConflictError(ValueError):
+    pass
+
+
+class ActiveWeeklyRunConflictError(ValueError):
+    def __init__(self, message: str, active_run_id: UUID) -> None:
+        self.active_run_id = active_run_id
+        super().__init__(message)
+
+
+def command_fingerprint(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def _command_replay(
+    db: AsyncSession,
+    *,
+    workspace_id: UUID,
+    product_id: UUID,
+    operation: str,
+    resource_id: UUID,
+    idempotency_key: str,
+    fingerprint: str,
+) -> UUID | None:
+    receipt = await db.scalar(
+        select(OperatorCommandReceipt).where(
+            OperatorCommandReceipt.workspace_id == workspace_id,
+            OperatorCommandReceipt.product_id == product_id,
+            OperatorCommandReceipt.operation == operation,
+            OperatorCommandReceipt.resource_id == resource_id,
+            OperatorCommandReceipt.idempotency_key == idempotency_key,
+        )
+    )
+    if receipt is None:
+        return None
+    if receipt.payload_fingerprint != fingerprint:
+        raise CommandIdempotencyConflictError("Idempotency key was used with another payload.")
+    return receipt.result_resource_id
+
+
+async def _record_command(
+    db: AsyncSession,
+    *,
+    workspace_id: UUID,
+    product_id: UUID,
+    operation: str,
+    resource_id: UUID,
+    idempotency_key: str,
+    fingerprint: str,
+    result_resource_id: UUID,
+) -> None:
+    await repository.flush(
+        db,
+        OperatorCommandReceipt(
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation=operation,
+            resource_id=resource_id,
+            idempotency_key=idempotency_key,
+            payload_fingerprint=fingerprint,
+            result_resource_id=result_resource_id,
+        ),
+    )
 
 
 def _object_list(value: object) -> list[str]:
@@ -45,6 +121,76 @@ def _object_dict(value: object) -> dict[str, object]:
 
 def _object_int(value: object, default: int) -> int:
     return int(value) if isinstance(value, (int, str)) else default
+
+
+def recommendation_action_values(output: object) -> dict[str, object]:
+    """Translate persisted internal AI output into canonical plan-action fields."""
+    parsed: RecommendationOutput = TypeAdapter(RecommendationOutput).validate_python(output)
+    if not isinstance(parsed, Recommendation):
+        raise DomainConflictError("Canonical actions require recommendation output.")
+    return {
+        "title": parsed.title,
+        "description": parsed.rationale,
+        "evidence_ids": list(parsed.evidence_ids),
+        "prepared_output_type": parsed.output_type,
+        "expected_metric": {"name": parsed.expected_metric},
+        "provenance": {
+            "actionFamily": parsed.action_family,
+            "claims": list(parsed.claims),
+        },
+    }
+
+
+def detection_snapshot_summaries(
+    input_payload: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Produce deterministic, factual report summaries from immutable detection input."""
+    detection_input = DetectionInput.model_validate(input_payload)
+    shipped = [
+        summary
+        for event in detection_input.shipping.events
+        if event.evaluation_outcome != "ignore"
+        and (summary := event.safe_summary or event.summary or event.user_benefit)
+    ]
+    shipped_summary: dict[str, object] = {
+        "status": "available" if shipped else "no_changes",
+        "items": shipped,
+    }
+
+    search = detection_input.search
+    if search is None:
+        search_summary: dict[str, object] = {
+            "status": "unavailable",
+            "reason": "source_not_configured",
+            "items": [],
+        }
+    else:
+        items = [f"Search data health: {search.health_status}; baseline: {search.baseline_status}."]
+        if search.current_start is not None and search.current_end is not None:
+            items.append(
+                f"Current search period: {search.current_start.isoformat()} to "
+                f"{search.current_end.isoformat()}."
+            )
+        if search.current is not None:
+            items.append(
+                f"Current search totals: {search.current.clicks} clicks and "
+                f"{search.current.impressions} impressions."
+            )
+        if search.prior is not None:
+            items.append(
+                f"Prior search totals: {search.prior.clicks} clicks and "
+                f"{search.prior.impressions} impressions."
+            )
+        if search.warnings:
+            items.append(f"Search data warnings: {', '.join(search.warnings)}.")
+        search_summary = {
+            "status": "available" if search.current is not None else "no_changes",
+            "items": items,
+            "healthStatus": search.health_status,
+            "baselineStatus": search.baseline_status,
+            "warnings": list(search.warnings),
+        }
+    return shipped_summary, search_summary
 
 
 async def select_current_run_opportunities(
@@ -133,6 +279,18 @@ async def create_weekly_run(
     replay = await repository.get_run_by_key(db, workspace_id, product_id, key)
     if replay is not None:
         return replay
+    active = await db.scalar(
+        select(OperatorRun.id).where(
+            OperatorRun.workspace_id == workspace_id,
+            OperatorRun.product_id == product_id,
+            OperatorRun.run_kind == "weekly_growth",
+            OperatorRun.status.in_(("pending", "running")),
+        )
+    )
+    if active is not None:
+        raise ActiveWeeklyRunConflictError(
+            "Another weekly growth run is already active for this product.", active
+        )
     run = OperatorRun(
         workspace_id=workspace_id,
         product_id=product_id,
@@ -165,7 +323,15 @@ async def request_manual_weekly_run(
     workflow_version: str,
     idempotency_key: str,
 ) -> OperatorRun:
+    if period_end <= period_start:
+        raise ValueError("period_end must be after period_start.")
     await require_role(db, workspace_id, actor_id, WRITE_ROLES)
+    product = await db.scalar(
+        select(Product).where(Product.workspace_id == workspace_id, Product.id == product_id)
+    )
+    if product is None:
+        raise LookupError("Product not found.")
+    await require_operator_run_ready(db, workspace_id, product_id)
     run = await create_weekly_run(
         db,
         workspace_id=workspace_id,
@@ -240,7 +406,7 @@ async def create_canonical_plan(
     )
     await repository.flush(db, plan)
     for position, recommendation in enumerate(recommendations, start=1):
-        output = recommendation.output
+        values = recommendation_action_values(recommendation.output)
         db.add(
             PlanAction(
                 workspace_id=run.workspace_id,
@@ -249,24 +415,26 @@ async def create_canonical_plan(
                 opportunity_id=recommendation.opportunity_id,
                 recommendation_id=recommendation.id,
                 position=position,
-                title=str(output.get("title", "Growth recommendation")),
-                description=str(output.get("recommendation", output.get("summary", ""))),
-                evidence_ids=_object_list(output.get("evidenceIds", [])),
-                confidence=str(output.get("confidence", "medium")),
-                missing_information=_object_list(output.get("missingInformation", [])),
-                approval_level=str(output.get("approvalLevel", "review")),
+                title=str(values["title"]),
+                description=str(values["description"]),
+                evidence_ids=_object_list(values["evidence_ids"]),
+                confidence="medium",
+                missing_information=[],
+                approval_level="review",
                 approval_status="pending",
                 status="pending",
                 cooldown_dedup_key=f"recommendation:{recommendation.id}",
                 idempotency_key=f"{plan.idempotency_key}:action:{recommendation.id}",
-                provenance={"recommendationId": str(recommendation.id)},
-                prepared_output_type=str(output.get("preparedOutputType", "no_asset")),
-                expected_metric=_object_dict(output.get("expectedMetric", {})),
-                measurement_window_days=_object_int(output.get("measurementWindowDays", 28), 28),
-                estimated_effort=str(output.get("estimatedEffort", "medium")),
+                provenance={
+                    "recommendationId": str(recommendation.id),
+                    **_object_dict(values["provenance"]),
+                },
+                prepared_output_type=str(values["prepared_output_type"]),
+                expected_metric=_object_dict(values["expected_metric"]),
+                measurement_window_days=28,
+                estimated_effort="medium",
             )
         )
-        recommendation.accepted_at = datetime.now(UTC)
     await db.flush()
     return plan
 
@@ -312,20 +480,75 @@ async def finalize_plan(
     plan.action_count = len(actions)
     plan.status = "ready"
     plan.finalized_at = now or datetime.now(UTC)
+    await write_product_event(
+        db,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        actor_id=None,
+        event_name="weekly_report_generated",
+        idempotency_key=f"weekly-report-generated:{plan.id}:{plan.plan_revision or 1}",
+        resource_type="marketing_plan",
+        resource_id=plan.id,
+        resource_revision=plan.plan_revision or 1,
+        valid_no_recommendation_report=not actions and bool(no_recommendations),
+    )
     await db.flush()
     return plan
 
 
 async def decide_recommendation(
-    db: AsyncSession, *, workspace_id: UUID, product_id: UUID, recommendation_id: UUID, accept: bool
+    db: AsyncSession,
+    *,
+    workspace_id: UUID,
+    product_id: UUID,
+    recommendation_id: UUID,
+    accept: bool,
+    actor_id: UUID,
+    reason: str | None,
+    comment: str | None,
 ) -> OperatorRecommendation:
     recommendation = await repository.get_recommendation(
         db, workspace_id, product_id, recommendation_id
     )
     if recommendation is None:
         raise LookupError("Recommendation not found.")
+    action = await db.scalar(
+        select(PlanAction).where(
+            PlanAction.workspace_id == workspace_id,
+            PlanAction.product_id == product_id,
+            PlanAction.recommendation_id == recommendation_id,
+        )
+    )
+    latest_decision = await db.scalar(
+        select(OperatorRecommendationDecision)
+        .where(
+            OperatorRecommendationDecision.workspace_id == workspace_id,
+            OperatorRecommendationDecision.product_id == product_id,
+            OperatorRecommendationDecision.recommendation_id == recommendation_id,
+        )
+        .order_by(OperatorRecommendationDecision.created_at.desc())
+        .limit(1)
+    )
+    if action is not None and action.status == "dismissed":
+        raise DomainConflictError("Dismissed actions cannot change recommendation decision.")
+    if latest_decision is not None and latest_decision.decision != (
+        "accepted" if accept else "dismissed"
+    ):
+        raise DomainConflictError("Recommendation already has a contradictory decision.")
     recommendation.accepted_at = recommendation.accepted_at or datetime.now(UTC) if accept else None
-    await db.flush()
+    await repository.flush(
+        db,
+        OperatorRecommendationDecision(
+            workspace_id=workspace_id,
+            product_id=product_id,
+            recommendation_id=recommendation_id,
+            decision="accepted" if accept else "dismissed",
+            reason=reason,
+            comment=comment,
+            actor_id=actor_id,
+            created_at=datetime.now(UTC),
+        ),
+    )
     return recommendation
 
 
@@ -336,14 +559,58 @@ async def decide_recommendation_use_case(
     product_id: UUID,
     recommendation_id: UUID,
     accept: bool,
+    actor_id: UUID,
+    reason: str | None,
+    comment: str | None,
+    idempotency_key: str,
+    fingerprint: str,
 ) -> OperatorRecommendation:
     try:
+        replay_id = await _command_replay(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation="recommendation.accept" if accept else "recommendation.dismiss",
+            resource_id=recommendation_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+        )
+        if replay_id is not None:
+            replay = await repository.get_recommendation(db, workspace_id, product_id, replay_id)
+            if replay is None:
+                raise LookupError("Recommendation replay result not found.")
+            return replay
         recommendation = await decide_recommendation(
             db,
             workspace_id=workspace_id,
             product_id=product_id,
             recommendation_id=recommendation_id,
             accept=accept,
+            actor_id=actor_id,
+            reason=reason,
+            comment=comment,
+        )
+        await write_product_event(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            actor_id=actor_id,
+            event_name="recommendation_accepted" if accept else "recommendation_dismissed",
+            idempotency_key=(
+                f"recommendation-{'accepted' if accept else 'dismissed'}:{recommendation_id}"
+            ),
+            resource_type="recommendation",
+            resource_id=recommendation_id,
+        )
+        await _record_command(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation="recommendation.accept" if accept else "recommendation.dismiss",
+            resource_id=recommendation_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            result_resource_id=recommendation.id,
         )
         await db.commit()
         return recommendation
@@ -395,8 +662,27 @@ async def approve_action_revision_use_case(
     asset_id: UUID,
     revision: int,
     actor_id: UUID,
+    idempotency_key: str,
+    fingerprint: str,
+    operation: str = "action.approve",
+    command_resource_id: UUID | None = None,
 ) -> PlanAction:
     try:
+        receipt_resource_id = command_resource_id or action_id
+        replay_id = await _command_replay(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation=operation,
+            resource_id=receipt_resource_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+        )
+        if replay_id is not None:
+            replay = await repository.get_action(db, workspace_id, product_id, replay_id)
+            if replay is None:
+                raise LookupError("Action replay result not found.")
+            return replay
         action = await repository.get_action(db, workspace_id, product_id, action_id, lock=True)
         if action is None:
             raise LookupError("Action or exact asset revision not found.")
@@ -405,6 +691,17 @@ async def approve_action_revision_use_case(
             and action.approved_asset_id == asset_id
             and action.approved_asset_revision == revision
         ):
+            await _record_command(
+                db,
+                workspace_id=workspace_id,
+                product_id=product_id,
+                operation=operation,
+                resource_id=receipt_resource_id,
+                idempotency_key=idempotency_key,
+                fingerprint=fingerprint,
+                result_resource_id=action.id,
+            )
+            await db.commit()
             return action
         asset = await repository.get_exact_asset(db, workspace_id, product_id, asset_id, revision)
         if asset is None or asset.action_id != action_id:
@@ -438,6 +735,27 @@ async def approve_action_revision_use_case(
             revision=revision,
             actor_id=actor_id,
         )
+        await write_product_event(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            actor_id=actor_id,
+            event_name="asset_approved",
+            idempotency_key=f"asset-approved:{asset_id}:{revision}",
+            resource_type="prepared_asset",
+            resource_id=asset_id,
+            resource_revision=revision,
+        )
+        await _record_command(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation=operation,
+            resource_id=receipt_resource_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            result_resource_id=action.id,
+        )
         await db.commit()
         return action
     except Exception:
@@ -454,6 +772,7 @@ async def transition_canonical_action(
     target: str,
     actor_id: UUID,
     reason: str | None = None,
+    comment: str | None = None,
     now: datetime | None = None,
 ) -> PlanAction:
     action = await repository.get_action(db, workspace_id, product_id, action_id, lock=True)
@@ -480,6 +799,26 @@ async def transition_canonical_action(
     if target == "dismissed":
         action.dismissed_by_actor_id, action.dismissed_at = actor_id, timestamp
         action.dismissal_reason = reason
+        action.dismissal_comment = comment
+        if action.recommendation_id is not None:
+            recommendation = await repository.get_recommendation(
+                db, workspace_id, product_id, action.recommendation_id
+            )
+            if recommendation is not None:
+                recommendation.accepted_at = None
+                await repository.flush(
+                    db,
+                    OperatorRecommendationDecision(
+                        workspace_id=workspace_id,
+                        product_id=product_id,
+                        recommendation_id=recommendation.id,
+                        decision="dismissed",
+                        reason=reason,
+                        comment=comment,
+                        actor_id=actor_id,
+                        created_at=timestamp,
+                    ),
+                )
     event = ActionEvent(
         workspace_id=workspace_id,
         product_id=product_id,
@@ -489,7 +828,7 @@ async def transition_canonical_action(
         new_status=target,
         actor_id=actor_id,
         reason=reason,
-        details={},
+        details={"comment": comment} if comment else {},
     )
     await repository.flush(db, event)
     return action
@@ -504,13 +843,41 @@ async def transition_action_use_case(
     target: str,
     actor_id: UUID,
     idempotency_key: str,
+    fingerprint: str,
     reason: str | None = None,
+    comment: str | None = None,
 ) -> PlanAction:
     try:
+        operation = f"action.{target}"
+        replay_id = await _command_replay(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation=operation,
+            resource_id=action_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+        )
+        if replay_id is not None:
+            replay = await repository.get_action(db, workspace_id, product_id, replay_id)
+            if replay is None:
+                raise LookupError("Action replay result not found.")
+            return replay
         action = await repository.get_action(db, workspace_id, product_id, action_id, lock=True)
         if action is None:
             raise LookupError("Action not found.")
         if action.status == target:
+            await _record_command(
+                db,
+                workspace_id=workspace_id,
+                product_id=product_id,
+                operation=operation,
+                resource_id=action_id,
+                idempotency_key=idempotency_key,
+                fingerprint=fingerprint,
+                result_resource_id=action.id,
+            )
+            await db.commit()
             return action
         action = await transition_canonical_action(
             db,
@@ -520,10 +887,27 @@ async def transition_action_use_case(
             target=target,
             actor_id=actor_id,
             reason=reason,
+            comment=comment,
         )
+        event_names = {
+            "dismissed": "action_dismissed",
+            "executing": "action_started",
+            "completed": "action_completed",
+        }
+        if event_name := event_names.get(target):
+            await write_product_event(
+                db,
+                workspace_id=workspace_id,
+                product_id=product_id,
+                actor_id=actor_id,
+                event_name=event_name,
+                idempotency_key=f"{event_name.replace('_', '-')}:{action_id}",
+                resource_type="plan_action",
+                resource_id=action_id,
+            )
         if target == "completed":
             now = action.completed_at or datetime.now(UTC)
-            measurement = await schedule_measurement(
+            await schedule_measurement(
                 db,
                 workspace_id=workspace_id,
                 product_id=product_id,
@@ -531,24 +915,16 @@ async def transition_action_use_case(
                 idempotency_key=f"{idempotency_key}:measurement",
                 starts_at=now,
             )
-            await enqueue_outbox_event(
-                db,
-                event_name="operator/action-measurement.requested",
-                schema_version=1,
-                idempotency_key=idempotency_key,
-                aggregate_id=action_id,
-                workspace_id=workspace_id,
-                product_id=product_id,
-                metadata=OutboxMetadata(
-                    {
-                        "actionId": str(action_id),
-                        "measurementId": str(measurement.id),
-                        "workspaceId": str(workspace_id),
-                        "productId": str(product_id),
-                        "schemaVersion": 1,
-                    }
-                ),
-            )
+        await _record_command(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation=operation,
+            resource_id=action_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            result_resource_id=action.id,
+        )
         await db.commit()
         return action
     except Exception:
@@ -564,8 +940,28 @@ async def revise_asset_use_case(
     asset_id: UUID,
     revision: int,
     structured_content: dict[str, object],
+    idempotency_key: str,
+    fingerprint: str,
 ) -> PreparedAsset:
     try:
+        replay_id = await _command_replay(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation="asset.patch",
+            resource_id=asset_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+        )
+        if replay_id is not None:
+            replay = await db.get(PreparedAsset, replay_id)
+            if (
+                replay is None
+                or replay.workspace_id != workspace_id
+                or replay.product_id != product_id
+            ):
+                raise LookupError("Asset replay result not found.")
+            return replay
         root = await repository.get_exact_asset(db, workspace_id, product_id, asset_id, revision)
         if root is None:
             root = await db.scalar(
@@ -600,6 +996,17 @@ async def revise_asset_use_case(
             raise LookupError("Asset not found.")
         if revision != latest.revision:
             if revision + 1 == latest.revision and latest.structured_content == content:
+                await _record_command(
+                    db,
+                    workspace_id=workspace_id,
+                    product_id=product_id,
+                    operation="asset.patch",
+                    resource_id=asset_id,
+                    idempotency_key=idempotency_key,
+                    fingerprint=fingerprint,
+                    result_resource_id=latest.id,
+                )
+                await db.commit()
                 return latest
             raise DomainConflictError("Asset revision is stale.")
         new_asset = PreparedAsset(
@@ -613,6 +1020,18 @@ async def revise_asset_use_case(
             structured_content=content,
         )
         db.add(new_asset)
+        await db.flush()
+        await write_product_event(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            actor_id=None,
+            event_name="asset_edited",
+            idempotency_key=f"asset-edited:{new_asset.id}:{new_asset.revision}",
+            resource_type="prepared_asset",
+            resource_id=new_asset.id,
+            resource_revision=new_asset.revision,
+        )
         if root.action_id is not None:
             action = await repository.get_action(
                 db, workspace_id, product_id, root.action_id, lock=True
@@ -637,6 +1056,16 @@ async def revise_asset_use_case(
                 approval.asset_revision = None
                 approval.decided_at = None
                 approval.decided_by_actor_id = None
+        await _record_command(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation="asset.patch",
+            resource_id=asset_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            result_resource_id=new_asset.id,
+        )
         await db.commit()
         await db.refresh(new_asset)
         return new_asset
@@ -654,8 +1083,28 @@ async def reject_asset_use_case(
     revision: int,
     actor_id: UUID,
     reason: str | None,
+    idempotency_key: str,
+    fingerprint: str,
 ) -> PreparedAsset:
     try:
+        replay_id = await _command_replay(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation="asset.reject",
+            resource_id=asset_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+        )
+        if replay_id is not None:
+            replay = await db.get(PreparedAsset, replay_id)
+            if (
+                replay is None
+                or replay.workspace_id != workspace_id
+                or replay.product_id != product_id
+            ):
+                raise LookupError("Asset replay result not found.")
+            return replay
         asset = await repository.get_exact_asset(db, workspace_id, product_id, asset_id, revision)
         if asset is None:
             raise LookupError("Asset not found.")
@@ -679,6 +1128,27 @@ async def reject_asset_use_case(
             if action is None:
                 raise LookupError("Action not found.")
             action.approval_status, action.status = "rejected", "pending"
+        await write_product_event(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            actor_id=actor_id,
+            event_name="asset_rejected",
+            idempotency_key=f"asset-rejected:{asset.id}:{asset.revision}",
+            resource_type="prepared_asset",
+            resource_id=asset.id,
+            resource_revision=asset.revision,
+        )
+        await _record_command(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            operation="asset.reject",
+            resource_id=asset_id,
+            idempotency_key=idempotency_key,
+            fingerprint=fingerprint,
+            result_resource_id=asset.id,
+        )
         await db.commit()
         return asset
     except Exception:
@@ -767,3 +1237,12 @@ def snapshot_hash(plan: MarketingPlan) -> str:
         raise DomainConflictError("Only finalized plans have a delivery hash.")
     encoded = json.dumps(plan.plan_snapshot, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+# Product operator settings share the service transaction boundary with operator commands.
+async def update_operator_config(
+    db: AsyncSession, product: object, values: dict[str, object]
+) -> None:
+    for field, value in values.items():
+        setattr(product, field, value)
+    await db.commit()

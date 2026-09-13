@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     app_env: AppEnv = "local"
     debug: bool = False
-    api_v1_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
+    api_v1_prefix: str = Field(default="/v1", alias="API_PREFIX")
     frontend_url: str = "http://localhost:3000"
     public_backend_url: str = "http://localhost:8000"
     allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     oauth_enabled_providers: Annotated[list[str], NoDecode] = Field(default_factory=list)
     github_oauth_client_id: str | None = None
     github_oauth_client_secret: SecretStr | None = None
+    google_login_client_id: str | None = None
+    google_login_client_secret: SecretStr | None = None
     x_oauth_enabled: bool = False
     x_publishing_enabled: bool = False
     x_oauth_client_id: str | None = None
@@ -86,6 +88,10 @@ class Settings(BaseSettings):
     inngest_signing_key: SecretStr | None = None
     inngest_event_api_base_url: str | None = None
     inngest_request_timeout_seconds: float = 10.0
+    legacy_daily_draft_schedule_enabled: bool = False
+    legacy_achievement_digest_schedules_enabled: bool = False
+    legacy_repository_changelog_schedules_enabled: bool = False
+    weekly_growth_schedule_enabled: bool = True
     generation_provider: GenerationProviderName | None = None
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4.1-mini"
@@ -99,6 +105,7 @@ class Settings(BaseSettings):
     browser_cookie_samesite: CookieSameSite = "lax"
     browser_access_cookie_name: str = "access_token"
     browser_refresh_cookie_name: str = "refresh_token"
+    browser_refresh_cookie_path: str = "/"
     browser_csrf_cookie_name: str = "csrf_token"
     browser_csrf_header_name: str = "X-CSRF-Token"
     browser_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
@@ -426,7 +433,7 @@ class Settings(BaseSettings):
                 "OAUTH_TRANSACTION_ENCRYPTION_KEY is required when OAuth providers are enabled "
                 "in production."
             )
-        unknown_providers = set(self.oauth_enabled_providers) - {"github"}
+        unknown_providers = set(self.oauth_enabled_providers) - {"github", "google"}
         if unknown_providers:
             raise ValueError(f"Unsupported OAuth providers: {', '.join(sorted(unknown_providers))}")
         if "github" in self.oauth_enabled_providers:
@@ -435,6 +442,13 @@ class Settings(BaseSettings):
             if self.github_oauth_client_secret is None:
                 raise ValueError(
                     "GITHUB_OAUTH_CLIENT_SECRET is required when GitHub OAuth is enabled."
+                )
+        if "google" in self.oauth_enabled_providers:
+            if not self.google_login_client_id:
+                raise ValueError("GOOGLE_LOGIN_CLIENT_ID is required when Google login is enabled.")
+            if self.google_login_client_secret is None:
+                raise ValueError(
+                    "GOOGLE_LOGIN_CLIENT_SECRET is required when Google login is enabled."
                 )
         if self.x_oauth_enabled:
             if not self.x_oauth_client_id:

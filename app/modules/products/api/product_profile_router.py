@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import DbDep, MutationUserDep, get_current_user
 from app.modules.identity.models.users import User
+from app.modules.products.models import Product
 from app.modules.products.schemas.product_profile_schema import (
     ProductProfileApproveRequest,
     ProductProfileAuditEventResponse,
@@ -15,6 +16,7 @@ from app.modules.products.schemas.product_profile_schema import (
 )
 from app.modules.products.services.product_profile_service import (
     approve_draft,
+    product_profile_readiness,
     profile_audit_events,
     profile_version,
     profile_versions,
@@ -34,9 +36,17 @@ async def get_product_profile(
     workspace_id: UUID, product_id: UUID, current_user: CurrentUserDep, db: DbDep
 ) -> ProductProfileCurrentResponse:
     draft, approved = await read_product_profile(db, workspace_id, product_id, current_user.id)
+    product = await db.get(Product, product_id)
+    assert product is not None
     return ProductProfileCurrentResponse(
         draft=ProductProfileVersionResponse.model_validate(draft) if draft else None,
         approved=ProductProfileVersionResponse.model_validate(approved) if approved else None,
+        readiness=product_profile_readiness(
+            draft,
+            approved,
+            operator_enabled=product.weekly_growth_operator_enabled,
+            manual_enabled=product.operator_manual_enabled,
+        ),
     )
 
 

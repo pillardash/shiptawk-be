@@ -4,33 +4,42 @@ from uuid import UUID
 
 from pydantic import Field
 
+from app.modules.search_intelligence.enums.search_intelligence_enum import (
+    SearchPropertyCompatibility,
+    SearchPropertyType,
+    SearchProviderKey,
+    SearchSourceStatus,
+)
 from app.modules.search_intelligence.schemas.search_sync_schema import SearchSyncRunResponse
 from app.shared.schemas import ApiSchema
 
 
 class SearchConnectRequest(ApiSchema):
-    provider: str
-    return_path: str = "/settings"
+    provider: str = Field(json_schema_extra={"enum": [SearchProviderKey.google.value]})
+    return_path: str = "/users/settings/connections"
 
 
 class SearchAuthorizationResponse(ApiSchema):
-    provider: str
+    provider: SearchProviderKey
     authorization_url: str
     status: Literal["authorization_pending"] = "authorization_pending"
 
 
 class SearchPropertyRefreshRequest(ApiSchema):
-    provider: str = "google"
+    provider: str = Field(
+        default=SearchProviderKey.google.value,
+        json_schema_extra={"enum": [SearchProviderKey.google.value]},
+    )
 
 
 class SearchPropertyResponse(ApiSchema):
     id: UUID
-    provider: str
+    provider: SearchProviderKey
     provider_property_id: str
     display_name: str
-    property_type: str
+    property_type: SearchPropertyType
     permission_level: str
-    compatibility_status: str
+    compatibility_status: SearchPropertyCompatibility
     last_seen_at: datetime
 
 
@@ -40,11 +49,11 @@ class SearchPropertySelectionRequest(ApiSchema):
 
 class SearchSourceResponse(ApiSchema):
     id: UUID
-    provider: str
+    provider: SearchProviderKey
     property_id: UUID
     provider_property_id: str
     website_source_id: UUID
-    status: str
+    status: SearchSourceStatus
     selected_at: datetime
     disconnected_at: datetime | None
     latest_successful_data_date: date | None

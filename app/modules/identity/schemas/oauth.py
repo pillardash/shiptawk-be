@@ -15,7 +15,19 @@ class CurrentWorkspaceResponse(ApiSchema):
     role: str
 
 
+class PrimaryIdentityResponse(ApiSchema):
+    provider: str
+    username: str | None
+    display_name: str | None
+    avatar_url: str | None
+
+
 class BrowserSessionResponse(ApiSchema):
     user: UserResponse
     current_workspace: CurrentWorkspaceResponse
     linked_providers: list[str]
+    primary_identity: PrimaryIdentityResponse | None
+
+
+class BrowserWorkspaceUpdate(ApiSchema):
+    workspace_id: UUID

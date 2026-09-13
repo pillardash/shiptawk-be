@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CookieAuthCsrfDep
+from app.api.deps import BrowserSessionDep, CookieAuthCsrfDep
 from app.core.config import get_settings
 from app.core.security import (
     create_access_token,
@@ -18,8 +18,10 @@ from app.db.session import get_db
 from app.modules.identity.models.oauth import AuthSession
 from app.modules.identity.schemas.oauth import (
     BrowserSessionResponse,
+    BrowserWorkspaceUpdate,
     CurrentWorkspaceResponse,
     OAuthProviderResponse,
+    PrimaryIdentityResponse,
 )
 from app.modules.identity.schemas.users import UserResponse
 from app.modules.identity.services.browser_oauth import (
@@ -27,7 +29,9 @@ from app.modules.identity.services.browser_oauth import (
     create_oauth_transaction,
     delete_user_account,
     get_bound_session,
+    list_available_workspaces,
     provision_oauth_session,
+    switch_session_workspace,
 )
 from app.modules.identity.services.sessions import (
     get_refresh_session,
@@ -73,7 +77,7 @@ def _set_session_cookies(
         settings.browser_refresh_cookie_name,
         refresh,
         httponly=True,
-        path=f"{settings.api_v1_prefix}/auth/browser",
+        path=settings.browser_refresh_cookie_path,
         max_age=settings.refresh_token_expire_days * 86400,
         secure=settings.browser_cookie_secure,
         samesite=settings.browser_cookie_samesite,
@@ -93,12 +97,22 @@ def _set_session_cookies(
 
 def _clear_session_cookies(response: Response) -> None:
     settings = get_settings()
-    for name, path in (
+    cookies = [
         (settings.browser_access_cookie_name, "/"),
         (settings.browser_csrf_cookie_name, "/"),
+        (settings.browser_refresh_cookie_name, settings.browser_refresh_cookie_path),
         (settings.browser_refresh_cookie_name, f"{settings.api_v1_prefix}/auth/browser"),
-    ):
+    ]
+    for name, path in dict.fromkeys(cookies):
         response.delete_cookie(name, path=path, domain=settings.browser_cookie_domain)
+
+
+def _primary_identity(identity: object | None) -> PrimaryIdentityResponse | None:
+    return (
+        PrimaryIdentityResponse.model_validate(identity, from_attributes=True)
+        if identity is not None
+        else None
+    )
 
 
 def _browser_claims(request: Request) -> tuple[UUID, UUID]:
@@ -192,13 +206,45 @@ async def callback(
 @router.get("/session", response_model=BrowserSessionResponse)
 async def session(request: Request, db: DbDep) -> BrowserSessionResponse:
     user_id, session_id = _browser_claims(request)
-    user, workspace, role, linked = await get_bound_session(
+    user, workspace, role, linked, identity = await get_bound_session(
         db, user_id=user_id, session_id=session_id
     )
     return BrowserSessionResponse(
         user=UserResponse.model_validate(user),
         current_workspace=CurrentWorkspaceResponse(id=workspace.id, name=workspace.name, role=role),
         linked_providers=linked,
+        primary_identity=_primary_identity(identity),
+    )
+
+
+@router.get("/workspaces", response_model=list[CurrentWorkspaceResponse])
+async def available_workspaces(
+    principal: BrowserSessionDep, db: DbDep
+) -> list[CurrentWorkspaceResponse]:
+    user, _ = principal
+    workspaces = await list_available_workspaces(db, user.id)
+    return [
+        CurrentWorkspaceResponse(id=workspace.id, name=workspace.name, role=role)
+        for workspace, role in workspaces
+    ]
+
+
+@router.patch("/session/workspace", response_model=BrowserSessionResponse)
+async def update_session_workspace(
+    payload: BrowserWorkspaceUpdate, principal: CookieAuthCsrfDep, db: DbDep
+) -> BrowserSessionResponse:
+    user, session_id = principal
+    bound_user, workspace, role, linked, identity = await switch_session_workspace(
+        db,
+        user_id=user.id,
+        session_id=session_id,
+        workspace_id=payload.workspace_id,
+    )
+    return BrowserSessionResponse(
+        user=UserResponse.model_validate(bound_user),
+        current_workspace=CurrentWorkspaceResponse(id=workspace.id, name=workspace.name, role=role),
+        linked_providers=linked,
+        primary_identity=_primary_identity(identity),
     )
 
 
@@ -218,7 +264,7 @@ async def refresh(request: Request, response: Response, db: DbDep) -> BrowserSes
         user_agent=request.headers.get("user-agent"),
         ip_address=request.client.host if request.client else None,
     )
-    bound_user, workspace, role, linked = await get_bound_session(
+    bound_user, workspace, role, linked, identity = await get_bound_session(
         db, user_id=user.id, session_id=new_session.id
     )
     _set_session_cookies(response, user_id=user.id, session_id=new_session.id, refresh=replacement)
@@ -226,6 +272,7 @@ async def refresh(request: Request, response: Response, db: DbDep) -> BrowserSes
         user=UserResponse.model_validate(bound_user),
         current_workspace=CurrentWorkspaceResponse(id=workspace.id, name=workspace.name, role=role),
         linked_providers=linked,
+        primary_identity=_primary_identity(identity),
     )
 
 

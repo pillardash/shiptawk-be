@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.operator.models import MeasurementWindow
 from app.modules.search_intelligence.models import SearchDailyMetric
 
@@ -121,6 +122,17 @@ class MeasurementFollowupWorkflow:
                     measurement.result = {"outcome": outcome}
                     measurement.limitations = ["Observed association only; no causal claim."]
             measurement.collected_at = datetime.now(UTC)
+            if measurement.status == "completed":
+                await write_product_event(
+                    db,
+                    workspace_id=workspace_id,
+                    product_id=product_id,
+                    actor_id=None,
+                    event_name="measurement_completed",
+                    idempotency_key=f"measurement-completed:{measurement.id}",
+                    resource_type="measurement_window",
+                    resource_id=measurement.id,
+                )
             await db.commit()
             return {
                 "status": measurement.status,

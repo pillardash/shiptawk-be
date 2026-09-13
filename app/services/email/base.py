@@ -27,8 +27,22 @@ class EmailMessage:
     reply_to: Sequence[EmailAddress] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class EmailSendReceipt:
+    message_id: str
+    accepted_recipients: tuple[str, ...]
+
+
+class EmailSendKnownFailure(Exception):
+    """The provider definitively did not accept the message."""
+
+
+class EmailSendOutcomeUnknown(Exception):
+    """The connection failed after handoff began, so delivery may have occurred."""
+
+
 class EmailService(Protocol):
-    def send(self, message: EmailMessage) -> None: ...
+    def send(self, message: EmailMessage) -> EmailSendReceipt | None: ...
 
 
 def create_email_service(settings: Settings) -> EmailService | None:

@@ -41,6 +41,7 @@ class ProductProfileSnapshot(ImmutableContract):
     objective: Annotated[str, Field(min_length=1, max_length=1000)]
     audience: str | None = None
     conversion_action: str | None = None
+    conversion_url: str | None = None
     positioning: str | None = None
     capabilities: tuple[ProfileCapabilitySnapshot, ...] = ()
 
@@ -120,6 +121,8 @@ class WebsitePageSnapshot(ImmutableContract):
     crawl_status: Literal["succeeded", "failed", "blocked"] = "succeeded"
     canonical_url: str | None = None
     canonical_fingerprint: str | None = None
+    page_type: Literal["homepage", "product", "pricing", "conversion", "other"] = "other"
+    internal_links: tuple[str, ...] | None = None
 
 
 class CapabilityMappingSnapshot(ImmutableContract):

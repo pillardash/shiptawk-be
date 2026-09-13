@@ -16,7 +16,10 @@ FROM python:3.12-slim AS runtime
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOST=0.0.0.0 \
+    PORT=8000 \
+    GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS=30
 
 WORKDIR /app
 
@@ -28,7 +31,9 @@ USER app
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD python scripts/healthcheck.py
 
 CMD ["./scripts/start.sh"]

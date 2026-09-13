@@ -1,8 +1,14 @@
 import smtplib
 from email.message import EmailMessage as SmtpMessage
-from email.utils import formataddr
+from email.utils import formataddr, make_msgid
 
-from app.services.email.base import EmailAddress, EmailMessage
+from app.services.email.base import (
+    EmailAddress,
+    EmailMessage,
+    EmailSendKnownFailure,
+    EmailSendOutcomeUnknown,
+    EmailSendReceipt,
+)
 
 
 class SmtpEmailService:
@@ -25,13 +31,14 @@ class SmtpEmailService:
         self.use_tls = use_tls
         self.use_ssl = use_ssl
 
-    def send(self, message: EmailMessage) -> None:
+    def send(self, message: EmailMessage) -> EmailSendReceipt:
         if not message.to:
             raise ValueError("Email message must have at least one recipient.")
         smtp_message = SmtpMessage()
         smtp_message["From"] = self.sender
         smtp_message["To"] = ", ".join(format_address(address) for address in message.to)
         smtp_message["Subject"] = message.subject
+        smtp_message["Message-ID"] = make_msgid()
         if message.reply_to:
             smtp_message["Reply-To"] = ", ".join(
                 format_address(address) for address in message.reply_to
@@ -41,12 +48,36 @@ class SmtpEmailService:
             smtp_message.add_alternative(message.html, subtype="html")
 
         smtp_class = smtplib.SMTP_SSL if self.use_ssl else smtplib.SMTP
-        with smtp_class(self.host, self.port, timeout=10) as smtp:
-            if self.use_tls:
-                smtp.starttls()
-            if self.username and self.password:
-                smtp.login(self.username, self.password)
-            smtp.send_message(smtp_message)
+        try:
+            with smtp_class(self.host, self.port, timeout=10) as smtp:
+                if self.use_tls:
+                    smtp.starttls()
+                if self.username and self.password:
+                    smtp.login(self.username, self.password)
+                try:
+                    refused = smtp.send_message(smtp_message)
+                except smtplib.SMTPRecipientsRefused as exc:
+                    raise EmailSendKnownFailure("SMTP rejected all recipients.") from exc
+                except (smtplib.SMTPServerDisconnected, TimeoutError, OSError) as exc:
+                    raise EmailSendOutcomeUnknown(
+                        "SMTP connection failed while handing off the message."
+                    ) from exc
+        except (EmailSendKnownFailure, EmailSendOutcomeUnknown):
+            raise
+        except (smtplib.SMTPException, OSError) as exc:
+            raise EmailSendKnownFailure("SMTP did not accept the message.") from exc
+
+        refused_recipients = set(refused)
+        accepted_recipients = tuple(
+            address.email for address in message.to if address.email not in refused_recipients
+        )
+        if not accepted_recipients:
+            raise EmailSendKnownFailure("SMTP rejected all recipients.")
+        message_id = str(smtp_message["Message-ID"])
+        return EmailSendReceipt(
+            message_id=message_id,
+            accepted_recipients=accepted_recipients,
+        )
 
 
 def format_address(address: EmailAddress) -> str:

@@ -182,13 +182,13 @@ def test_analytics_summary_and_activity_are_tenant_safe_and_aggregate_only(
     user, workspace, other_workspace = client.portal.call(seed_data, sessions)
 
     summary = client.get(
-        f"/api/v1/workspaces/{workspace.id}/analytics/summary?days=30", headers=auth(user)
+        f"/v1/workspaces/{workspace.id}/analytics/summary?days=30", headers=auth(user)
     )
     activity = client.get(
-        f"/api/v1/workspaces/{workspace.id}/analytics/activity?days=7", headers=auth(user)
+        f"/v1/workspaces/{workspace.id}/analytics/activity?days=7", headers=auth(user)
     )
     forbidden = client.get(
-        f"/api/v1/workspaces/{other_workspace.id}/analytics/summary", headers=auth(user)
+        f"/v1/workspaces/{other_workspace.id}/analytics/summary", headers=auth(user)
     )
 
     assert summary.status_code == 200
@@ -212,10 +212,10 @@ def test_unread_count_requires_membership_and_excludes_other_workspaces(
     user, workspace, other_workspace = client.portal.call(seed_data, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/notifications/unread-count", headers=auth(user)
+        f"/v1/workspaces/{workspace.id}/notifications/unread-count", headers=auth(user)
     )
     forbidden = client.get(
-        f"/api/v1/workspaces/{other_workspace.id}/notifications/unread-count",
+        f"/v1/workspaces/{other_workspace.id}/notifications/unread-count",
         headers=auth(user),
     )
 
@@ -231,9 +231,9 @@ def test_notification_preferences_are_generated_safe_contracts(
     assert client.portal is not None
     user, _, _ = client.portal.call(seed_data, sessions)
 
-    response = client.get("/api/v1/notifications/preferences", headers=auth(user))
+    response = client.get("/v1/notifications/preferences", headers=auth(user))
     updated = client.patch(
-        "/api/v1/notifications/preferences",
+        "/v1/notifications/preferences",
         headers=auth(user),
         json={
             "emailNotificationsEnabled": False,
@@ -269,9 +269,9 @@ def test_unsubscribe_rejects_invalid_tokens_and_disables_email(
         b"test-notification-signing-secret", str(user.id).encode(), hashlib.sha256
     ).hexdigest()
 
-    invalid = client.get("/api/v1/notifications/unsubscribe?token=invalid")
-    response = client.get(f"/api/v1/notifications/unsubscribe?token={user.id}.{signature}")
-    preferences = client.get("/api/v1/notifications/preferences", headers=auth(user))
+    invalid = client.get("/v1/notifications/unsubscribe?token=invalid")
+    response = client.get(f"/v1/notifications/unsubscribe?token={user.id}.{signature}")
+    preferences = client.get("/v1/notifications/preferences", headers=auth(user))
 
     assert invalid.status_code == 400
     assert invalid.headers["content-type"].startswith("text/plain")

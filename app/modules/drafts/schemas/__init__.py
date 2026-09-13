@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, StringConstraints
@@ -48,6 +48,25 @@ class DraftPublishResponse(ApiSchema):
     already_posted: bool
 
 
+class DraftApproveAndPublishCommand(ApiSchema):
+    asset_id: UUID
+    revision: Annotated[int, Field(ge=1)]
+    explicit_approval: Literal[True]
+
+
+class DraftApproveAndPublishResponse(ApiSchema):
+    draft_id: UUID
+    asset_id: UUID
+    revision: int
+    outcome: Literal["success", "failed", "unknown", "replay"]
+    original_outcome: Literal["success", "failed", "unknown"]
+    provider: Literal["x"] = "x"
+    provider_post_id: str | None = None
+    url: str | None = None
+    idempotency_key: str
+    error_code: str | None = None
+
+
 class DraftResponse(ApiSchema):
     id: UUID
     workspace_id: UUID
@@ -68,6 +87,9 @@ class DraftResponse(ApiSchema):
     updated_at: datetime
     generation_run_id: UUID | None
     selected_candidate_id: UUID | None
+    prepared_asset_id: UUID | None = None
+    prepared_asset_revision: int | None = None
+    publishing_authority: Literal["legacy_x_draft"] = "legacy_x_draft"
 
 
 class EventEvaluationResponse(ApiSchema):

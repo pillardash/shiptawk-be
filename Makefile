@@ -1,7 +1,7 @@
-.PHONY: install dev test test-cov lint format format-check typecheck check migrate revision
+.PHONY: install dev test test-cov test-evaluations lint format format-check typecheck check contract-check migration-check migrate revision
 
 install:
-	uv sync
+	uv sync --frozen --all-groups
 
 dev:
 	uv run uvicorn app.main:app --reload
@@ -11,6 +11,9 @@ test:
 
 test-cov:
 	uv run pytest --cov
+
+test-evaluations:
+	uv run pytest -m evaluation
 
 lint:
 	uv run ruff check .
@@ -23,9 +26,15 @@ format-check:
 	uv run ruff format --check .
 
 typecheck:
-	uv run mypy app tests
+	uv run mypy app scripts tests
 
-check: format-check lint typecheck test
+contract-check:
+	uv run python scripts/export_openapi.py --check
+
+migration-check:
+	uv run python scripts/check_migrations.py
+
+check: format-check lint typecheck contract-check test-cov
 
 migrate:
 	uv run alembic upgrade head

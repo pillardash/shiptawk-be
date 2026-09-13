@@ -34,6 +34,19 @@ class QueryBaselineClassification:
     views: tuple[SearchBaselineView, ...]
 
 
+def is_high_impression_low_ctr_page(
+    *, current_clicks: int, current_impressions: int, current_position: Decimal | None
+) -> bool:
+    ctr = Decimal(current_clicks) / Decimal(current_impressions) if current_impressions else None
+    return (
+        current_impressions >= 100
+        and current_position is not None
+        and current_position <= Decimal(10)
+        and ctr is not None
+        and ctr < Decimal("0.02")
+    )
+
+
 def calculate_complete_periods(cutoff: date) -> ComparisonPeriods:
     current_start = cutoff - timedelta(days=27)
     return ComparisonPeriods(
@@ -127,4 +140,5 @@ __all__ = [
     "baseline_status",
     "calculate_complete_periods",
     "classify_query_baseline",
+    "is_high_impression_low_ctr_page",
 ]

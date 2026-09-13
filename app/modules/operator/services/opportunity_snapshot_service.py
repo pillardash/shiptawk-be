@@ -261,6 +261,19 @@ async def _assemble_search(
     )
 
 
+def _website_page_type(url: str, base_url: str) -> str:
+    path = url.split("?", 1)[0].lower().rstrip("/")
+    if path == base_url.lower().rstrip("/"):
+        return "homepage"
+    if any(segment in path for segment in ("/pricing", "/plans")):
+        return "pricing"
+    if any(segment in path for segment in ("/signup", "/register", "/contact", "/demo")):
+        return "conversion"
+    if any(segment in path for segment in ("/product", "/features", "/solutions")):
+        return "product"
+    return "other"
+
+
 async def _assemble_website(
     db: AsyncSession, workspace_id: UUID, product_id: UUID, as_of: datetime, profile_version: int
 ) -> WebsiteSnapshot | None:
@@ -291,6 +304,12 @@ async def _assemble_website(
                 crawl_status=crawl_status,
                 canonical_url=page.canonical_url,
                 canonical_fingerprint=hashlib.sha256(page.canonical_url.encode()).hexdigest(),
+                page_type=_website_page_type(page.canonical_url, source.normalized_base_url),
+                internal_links=(
+                    tuple(sorted(result.internal_links))
+                    if result.internal_links is not None
+                    else None
+                ),
             )
         )
     persisted_mapping_versions = {
@@ -370,6 +389,7 @@ async def assemble_detection_input(
             if profile.primary_conversion_goal is not None
             else profile.primary_conversion_url
         ),
+        conversion_url=profile.primary_conversion_url,
         positioning=profile.main_value_proposition or profile.differentiation,
         capabilities=capabilities,
     )

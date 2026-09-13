@@ -44,6 +44,7 @@ from app.modules.integrations.services.connections import (
     disconnect_x_integration,
     sync_github_repositories,
     update_repository_fields,
+    update_repository_tracking,
 )
 from app.modules.integrations.services.x_oauth import (
     consume_x_oauth_transaction,
@@ -152,7 +153,7 @@ async def authorize_x_connection(
     request: Request,
     principal: BrowserSessionDep,
     db: DbDep,
-    return_path: str = Query("/settings", alias="returnPath"),
+    return_path: str = Query("/users/settings/connections", alias="returnPath"),
 ) -> RedirectResponse:
     user, _ = principal
     role = await _membership(db, workspace_id, user.id)
@@ -259,7 +260,7 @@ async def attach_installation(
         installation = await _provider(request).verify_installation(body.installation_id)
     except GitHubAppError as exc:
         raise BadRequestError(str(exc), code="github_app_error") from exc
-    await attach_github_installation(db, workspace_id, installation)
+    await attach_github_installation(db, workspace_id, user.id, installation)
     return InstallationResponse(
         installation_id=installation.id,
         account_login=installation.account_login,
@@ -405,5 +406,7 @@ async def update_tracking(
 ) -> RepositoryResponse:
     user, _ = principal
     await _require_repository_write_role(db, workspace_id, user.id)
-    row = await update_repository_fields(db, workspace_id, repo_id, is_tracked=body.is_tracked)
+    row = await update_repository_tracking(
+        db, workspace_id, repo_id, user.id, is_tracked=body.is_tracked
+    )
     return _repo(row)

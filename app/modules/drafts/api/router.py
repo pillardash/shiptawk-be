@@ -1,7 +1,7 @@
 from typing import Annotated, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 
 from app.api.deps import (
     DbDep,
@@ -17,6 +17,8 @@ from app.modules.drafts.repositories.drafts import (
 )
 from app.modules.drafts.schemas import (
     DraftAngleRegeneration,
+    DraftApproveAndPublishCommand,
+    DraftApproveAndPublishResponse,
     DraftCandidateSelection,
     DraftContentUpdate,
     DraftListResponse,
@@ -31,6 +33,7 @@ from app.modules.drafts.schemas import (
 )
 from app.modules.drafts.services.regeneration import regenerate_draft_angle
 from app.modules.drafts.services.review import (
+    approve_and_publish_draft_revision,
     approve_draft,
     edit_draft_content,
     publish_draft,
@@ -65,6 +68,7 @@ def get_credential_decryptor(request: Request) -> CredentialDecryptor:
 
 PublisherDep = Annotated[Publisher, Depends(get_publisher)]
 CredentialDecryptorDep = Annotated[CredentialDecryptor, Depends(get_credential_decryptor)]
+IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=255)]
 
 
 @router.get("", response_model=DraftListResponse)
@@ -199,3 +203,31 @@ async def publish_draft_endpoint(
         credential_decryptor,
     )
     return DraftPublishResponse.model_validate(receipt)
+
+
+@router.post(
+    "/{draft_id}/approve-and-publish",
+    response_model=DraftApproveAndPublishResponse,
+)
+async def approve_and_publish_draft_revision_endpoint(
+    workspace_id: UUID,
+    draft_id: UUID,
+    payload: DraftApproveAndPublishCommand,
+    idempotency_key: IdempotencyKey,
+    current_user: MutationUserDep,
+    db: DbDep,
+    publisher: PublisherDep,
+    credential_decryptor: CredentialDecryptorDep,
+) -> DraftApproveAndPublishResponse:
+    result = await approve_and_publish_draft_revision(
+        db,
+        workspace_id=workspace_id,
+        draft_id=draft_id,
+        asset_id=payload.asset_id,
+        revision=payload.revision,
+        actor_id=current_user.id,
+        idempotency_key=idempotency_key,
+        publisher=publisher,
+        credential_decryptor=credential_decryptor,
+    )
+    return DraftApproveAndPublishResponse.model_validate(result)

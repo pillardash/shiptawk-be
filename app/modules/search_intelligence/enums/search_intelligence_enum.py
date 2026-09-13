@@ -2,6 +2,7 @@ from enum import StrEnum
 
 
 class SearchProviderKey(StrEnum):
+    google = "google"
     google_search = "google_search"
 
 
@@ -35,6 +36,42 @@ class SearchSyncStatus(StrEnum):
     cancelled = "cancelled"
 
 
+class SearchConnectionStatus(StrEnum):
+    active = "active"
+    expired = "expired"
+    revoked = "revoked"
+    error = "error"
+
+
+class SearchHealthStatus(StrEnum):
+    not_connected = "not_connected"
+    awaiting_property = "awaiting_property"
+    syncing = "syncing"
+    healthy = "healthy"
+    stale = "stale"
+    no_data = "no_data"
+    error = "error"
+    revoked = "revoked"
+
+
+class SearchWarningCode(StrEnum):
+    query_page_data_truncated = "query_page_data_truncated"
+    site_total_dates_missing = "site_total_dates_missing"
+
+
+class SearchRequirementLevel(StrEnum):
+    recommended = "recommended"
+
+
+class SearchCapabilityReduction(StrEnum):
+    search_dependent_recommendations_unavailable = "search_dependent_recommendations_unavailable"
+
+
+class SearchBaselineItemKind(StrEnum):
+    query = "query"
+    page = "page"
+
+
 class SearchMetricGrain(StrEnum):
     site_total = "site_total"
     query_page = "query_page"
@@ -56,13 +93,19 @@ class SearchBaselineView(StrEnum):
 
 
 __all__ = [
+    "SearchBaselineItemKind",
     "SearchBaselineView",
+    "SearchCapabilityReduction",
+    "SearchConnectionStatus",
+    "SearchHealthStatus",
     "SearchMetricGrain",
     "SearchPageMatchStatus",
     "SearchPropertyCompatibility",
     "SearchPropertyType",
     "SearchProviderKey",
+    "SearchRequirementLevel",
     "SearchSourceStatus",
     "SearchSyncStatus",
     "SearchSyncTrigger",
+    "SearchWarningCode",
 ]

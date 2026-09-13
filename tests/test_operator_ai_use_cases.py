@@ -18,7 +18,7 @@ from app.modules.operator.policies.ai_output_policy import (
     validate_output_compatibility,
 )
 from app.modules.operator.policies.approval_policy import action_has_required_approval
-from app.modules.operator.policies.risk_policy import final_risk_outcome
+from app.modules.operator.policies.risk_policy import evaluate_asset_safety, final_risk_outcome
 from app.modules.operator.prompts.prepared_asset_prompt import build_prepared_asset_prompt
 from app.modules.operator.prompts.recommendation_prompt import build_recommendation_prompt
 from app.modules.operator.prompts.risk_review_prompt import build_risk_review_prompt
@@ -164,6 +164,25 @@ def test_every_detector_action_family_has_one_deterministic_output(
 )
 def test_final_risk_precedence(deterministic: str, ai: str, expected: str) -> None:
     assert final_risk_outcome(deterministic, ai) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "blocked_terms", "blocked_topics", "boundaries", "expected"),
+    [
+        ({"post": "A public release"}, [], [], [], "pass"),
+        ({"post": "Our SECRET ships"}, [" secret "], [], [], "block"),
+        ({"post": "The private roadmap"}, [], ["roadmap"], [], "block"),
+        ({"post": "Revenue increased"}, [], [], ["revenue"], "review"),
+    ],
+)
+def test_operator_asset_safety_is_pure_and_product_policy_owned(
+    content: dict[str, object],
+    blocked_terms: list[str],
+    blocked_topics: list[str],
+    boundaries: list[str],
+    expected: str,
+) -> None:
+    assert evaluate_asset_safety(content, blocked_terms, blocked_topics, boundaries) == expected
 
 
 def test_operator_ai_metadata_has_canonical_tenant_scoped_records() -> None:

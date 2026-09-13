@@ -14,6 +14,7 @@ from app.modules.search_intelligence.policies.search_baseline_policy import (
     baseline_status,
     calculate_complete_periods,
     classify_query_baseline,
+    is_high_impression_low_ctr_page,
 )
 from app.modules.search_intelligence.policies.search_health_policy import search_health_state
 from app.modules.search_intelligence.policies.search_property_policy import (
@@ -154,6 +155,19 @@ def test_baseline_growth_uses_click_direction_after_impression_eligibility() -> 
         has_confident_page=True,
     )
     assert result.views == (SearchBaselineView.top_declining_queries,)
+
+
+def test_high_impression_low_ctr_page_classification_is_page_eligible() -> None:
+    assert is_high_impression_low_ctr_page(
+        current_clicks=1,
+        current_impressions=120,
+        current_position=Decimal("7"),
+    )
+    assert not is_high_impression_low_ctr_page(
+        current_clicks=3,
+        current_impressions=120,
+        current_position=Decimal("7"),
+    )
 
 
 def test_domain_property_accepts_subdomains_but_not_suffix_confusion() -> None:

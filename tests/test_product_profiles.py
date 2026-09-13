@@ -92,7 +92,7 @@ def test_product_profile_first_draft_approval_and_version_history(
     assert client.portal is not None
     user, workspace, _, product = client.portal.call(seed_profile_product, sessions)
     headers = {"Authorization": f"Bearer {create_access_token(str(user.id))}"}
-    path = f"/api/v1/workspaces/{workspace.id}/products/{product.id}/product-profile"
+    path = f"/v1/workspaces/{workspace.id}/products/{product.id}/product-profile"
 
     created = client.put(path, json=complete_payload(), headers=headers)
     assert created.status_code == 200, created.text
@@ -105,17 +105,62 @@ def test_product_profile_first_draft_approval_and_version_history(
     assert approved.json()["status"] == "approved"
     assert approved.json()["version"] == 1
 
+    current = client.get(path, headers=headers)
+    assert current.status_code == 200
+    assert current.json()["readiness"] == {
+        "schemaVersion": 1,
+        "profileAuthority": "approved_product_profile",
+        "draftCompletenessScore": 0,
+        "draftMissingFields": [
+            "productName",
+            "shortDescription",
+            "primaryAudience",
+            "primaryCustomerProblem",
+            "mainValueProposition",
+            "primaryConversionGoal",
+            "primaryConversionUrl",
+            "mainMarket",
+            "differentiation",
+            "importantCapabilities",
+            "quarterlyObjective",
+            "restrictedTopics",
+            "restrictedClaims",
+            "restrictedLanguage",
+            "brandVoiceGuidance",
+        ],
+        "approvedProfileId": approved.json()["id"],
+        "approvedProfileVersion": 1,
+        "profileReady": True,
+        "operatorEnabled": False,
+        "manualRunAvailable": False,
+        "blockingReasons": ["operator_disabled"],
+    }
+
     version = client.get(path + "/versions/1", headers=headers)
     assert version.status_code == 200
     assert version.json()["id"] == approved.json()["id"]
 
     second_draft = client.put(
         path,
-        json=complete_payload() | {"quarterlyObjective": "Increase qualified demos"},
+        json=complete_payload() | {"quarterlyObjective": "", "importantCapabilities": []},
         headers=headers,
     )
     assert second_draft.status_code == 200
     assert second_draft.json()["basedOnProfileId"] == approved.json()["id"]
+
+    current_with_incomplete_draft = client.get(path, headers=headers)
+    readiness = current_with_incomplete_draft.json()["readiness"]
+    assert readiness["profileReady"] is True
+    assert readiness["approvedProfileId"] == approved.json()["id"]
+    assert readiness["approvedProfileVersion"] == 1
+    assert readiness["draftMissingFields"] == ["importantCapabilities", "quarterlyObjective"]
+
+    run = client.post(
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/operator/runs",
+        json={"runKind": "opportunity_detection"},
+        headers=headers | {"Idempotency-Key": "approved-profile-survives-draft"},
+    )
+    assert run.status_code == 202
 
     stale = client.put(path, json=complete_payload(), headers=headers)
     assert stale.status_code == 409
@@ -148,12 +193,33 @@ def test_product_profile_rejects_private_conversion_url_and_cross_workspace_acce
     payload = complete_payload() | {"primaryConversionUrl": "http://127.0.0.1/signup"}
 
     invalid = client.put(
-        f"/api/v1/workspaces/{other_workspace.id}/products/{product.id}/product-profile",
+        f"/v1/workspaces/{other_workspace.id}/products/{product.id}/product-profile",
         json=complete_payload(),
         headers=headers,
     )
     assert invalid.status_code == 404
 
-    own_path = f"/api/v1/workspaces/{product.workspace_id}/products/{product.id}/product-profile"
+    own_path = f"/v1/workspaces/{product.workspace_id}/products/{product.id}/product-profile"
     unsafe = client.put(own_path, json=payload, headers=headers)
     assert unsafe.status_code == 422
+
+
+def test_manual_operator_run_requires_approved_profile_before_enqueue(
+    profile_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    client, sessions = profile_client
+    assert client.portal is not None
+    user, workspace, _, product = client.portal.call(seed_profile_product, sessions)
+    headers = {
+        "Authorization": f"Bearer {create_access_token(str(user.id))}",
+        "Idempotency-Key": "profile-readiness-gate",
+    }
+
+    response = client.post(
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/operator/runs",
+        json={"runKind": "opportunity_detection"},
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "approved_product_profile_required"

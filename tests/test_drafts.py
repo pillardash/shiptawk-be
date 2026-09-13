@@ -65,7 +65,7 @@ def draft_client() -> Generator[tuple[TestClient, async_sessionmaker[AsyncSessio
     register_exception_handlers(app)
     app.state.generation_provider = None
     app.state.generation_model = "default"
-    app.include_router(drafts_router, prefix="/api/v1")
+    app.include_router(drafts_router, prefix="/v1")
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as client:
         assert client.portal is not None
@@ -311,7 +311,7 @@ def test_list_drafts_is_paginated_stable_and_sanitized(
     user, workspace, _, draft_ids = client.portal.call(seed_drafts, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/drafts?status=pending",
+        f"/v1/workspaces/{workspace.id}/drafts?status=pending",
         headers=auth_headers(user),
     )
 
@@ -334,7 +334,7 @@ def test_list_drafts_is_paginated_stable_and_sanitized(
         assert "postingStartedAt" not in item
 
     second_page = client.get(
-        f"/api/v1/workspaces/{workspace.id}/drafts?status=pending&page=2&limit=1",
+        f"/v1/workspaces/{workspace.id}/drafts?status=pending&page=2&limit=1",
         headers=auth_headers(user),
     ).json()
     assert [item["id"] for item in second_page["data"]] == [str(draft_ids[0])]
@@ -360,7 +360,7 @@ def test_list_drafts_rejects_invalid_queries(
     user, workspace, _, _ = client.portal.call(seed_drafts, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/drafts?{query}", headers=auth_headers(user)
+        f"/v1/workspaces/{workspace.id}/drafts?{query}", headers=auth_headers(user)
     )
 
     assert response.status_code == 422
@@ -383,7 +383,7 @@ def test_list_drafts_requires_active_workspace_membership(
             await db.commit()
 
     client.portal.call(deactivate)
-    response = client.get(f"/api/v1/workspaces/{workspace.id}/drafts", headers=auth_headers(user))
+    response = client.get(f"/v1/workspaces/{workspace.id}/drafts", headers=auth_headers(user))
 
     assert response.status_code == 404
     assert response.json()["code"] == "draft_workspace_not_found"
@@ -397,7 +397,7 @@ def test_review_returns_sanitized_tenant_scoped_data_ordered_by_rank(
     user, workspace, _, draft_id, candidate_ids = client.portal.call(seed_review, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/review",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/review",
         headers=auth_headers(user),
     )
 
@@ -432,7 +432,7 @@ def test_review_without_normalized_event_returns_empty_review_context(
     user, workspace, _, draft_ids = client.portal.call(seed_drafts, sessions)
 
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/review",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/review",
         headers=auth_headers(user),
     )
 
@@ -449,11 +449,11 @@ def test_review_does_not_resolve_a_draft_through_another_workspace(
     user, workspace, other_workspace, draft_id, _ = client.portal.call(seed_review, sessions)
 
     cross_workspace = client.get(
-        f"/api/v1/workspaces/{other_workspace.id}/drafts/{draft_id}/review",
+        f"/v1/workspaces/{other_workspace.id}/drafts/{draft_id}/review",
         headers=auth_headers(user),
     )
     missing = client.get(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{uuid4()}/review",
+        f"/v1/workspaces/{workspace.id}/drafts/{uuid4()}/review",
         headers=auth_headers(user),
     )
 
@@ -542,12 +542,12 @@ def test_editor_can_edit_and_select_candidate_with_feedback_history(
     headers = auth_headers(user)
 
     edited = client.patch(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/content",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/content",
         headers=headers,
         json={"content": "A safer edited option"},
     )
     selected = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/select-candidate",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/select-candidate",
         headers=headers,
         json={"candidateId": str(candidate_ids[0])},
     )
@@ -579,20 +579,20 @@ def test_reviewer_can_approve_and_reject_but_cannot_edit_or_select(
     headers = auth_headers(user)
 
     edit = client.patch(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/content",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/content",
         headers=headers,
         json={"content": "Reviewer rewrite"},
     )
     select_candidate = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/select-candidate",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/select-candidate",
         headers=headers,
         json={"candidateId": str(candidate_ids[0])},
     )
     approved = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/approve", headers=headers
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/approve", headers=headers
     )
     rejected = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/reject",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/reject",
         headers=headers,
         json={"reason": "The claim needs stronger public evidence."},
     )
@@ -618,8 +618,8 @@ def test_approve_and_reject_are_idempotent_without_duplicate_history(
     user, workspace, _, draft_ids = client.portal.call(seed_drafts, sessions)
     client.portal.call(set_role, sessions, workspace.id, user.id, WorkspaceRole.owner)
     headers = auth_headers(user)
-    approve_url = f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve"
-    reject_url = f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[1]}/reject"
+    approve_url = f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve"
+    reject_url = f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[1]}/reject"
 
     first_approval = client.post(approve_url, headers=headers)
     second_approval = client.post(approve_url, headers=headers)
@@ -676,20 +676,20 @@ def test_commands_enforce_terminal_lifecycle_without_publishing(
     headers = auth_headers(user)
 
     posted_approval = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve", headers=headers
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve", headers=headers
     )
     posted_rejection = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/reject",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/reject",
         headers=headers,
         json={"reason": "Do not mutate a post"},
     )
     rejected_edit = client.patch(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[1]}/content",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[1]}/content",
         headers=headers,
         json={"content": "Do not revive a rejected draft"},
     )
     rejected_approval = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[1]}/approve", headers=headers
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[1]}/approve", headers=headers
     )
 
     assert posted_approval.status_code == 200
@@ -719,7 +719,7 @@ def test_viewer_and_inactive_membership_cannot_run_commands(
     assert client.portal is not None
     user, workspace, _, draft_ids = client.portal.call(seed_drafts, sessions)
     headers = auth_headers(user)
-    url = f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve"
+    url = f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve"
 
     viewer = client.post(url, headers=headers)
 
@@ -762,7 +762,7 @@ def test_commands_do_not_resolve_drafts_through_another_workspace(
     method = client.patch if path == "content" else client.post
 
     response = method(
-        f"/api/v1/workspaces/{other_workspace.id}/drafts/{draft_ids[0]}/{path}",
+        f"/v1/workspaces/{other_workspace.id}/drafts/{draft_ids[0]}/{path}",
         headers=auth_headers(user),
         json=payload,
     )
@@ -783,7 +783,7 @@ def test_candidate_selection_requires_same_workspace_and_event(
     client.portal.call(set_role, sessions, workspace.id, user.id, WorkspaceRole.admin)
 
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/select-candidate",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/select-candidate",
         headers=auth_headers(user),
         json={"candidateId": str(uuid4())},
     )
@@ -819,7 +819,7 @@ def test_cookie_authenticated_command_requires_valid_csrf(
     client.cookies.set(
         "access_token", create_access_token(str(user.id), session_id=str(session.id)), path="/"
     )
-    url = f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve"
+    url = f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/approve"
 
     missing = client.post(url, headers={"Origin": "http://localhost:3000"})
     csrf = sign_csrf_token(str(session.id))
@@ -855,7 +855,7 @@ def test_draft_commands_validate_public_text_limits(
     method = client.patch if path == "content" else client.post
 
     response = method(
-        f"/api/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/{path}",
+        f"/v1/workspaces/{workspace.id}/drafts/{draft_ids[0]}/{path}",
         headers=auth_headers(user),
         json=payload,
     )
@@ -925,12 +925,12 @@ def test_angle_regeneration_is_idempotent_persisted_and_requires_reapproval(
     app = cast(FastAPI, client.app)
     app.state.llm_execution_service = llm
     payload = {"angle": "user_benefit", "idempotencyKey": "draft-angle:test-1"}
-    url = f"/api/v1/workspaces/{workspace.id}/drafts/{draft_id}/regenerate-angle"
+    url = f"/v1/workspaces/{workspace.id}/drafts/{draft_id}/regenerate-angle"
 
     first = client.post(url, headers=auth_headers(user), json=payload)
     replay = client.post(url, headers=auth_headers(user), json=payload)
     hidden = client.post(
-        f"/api/v1/workspaces/{other_workspace.id}/drafts/{draft_id}/regenerate-angle",
+        f"/v1/workspaces/{other_workspace.id}/drafts/{draft_id}/regenerate-angle",
         headers=auth_headers(user),
         json={**payload, "idempotencyKey": "draft-angle:hidden"},
     )

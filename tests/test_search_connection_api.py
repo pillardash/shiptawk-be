@@ -17,6 +17,7 @@ from app.db.base import Base
 from app.db.outbox import OutboxEvent
 from app.db.session import get_db
 from app.main import create_app
+from app.modules.analytics.models import ProductEvent
 from app.modules.identity.models.oauth import AuthSession
 from app.modules.identity.models.users import User
 from app.modules.integrations.models import IntegrationConnection
@@ -56,6 +57,10 @@ REQUIRED_SCOPES = (
     "email",
     "https://www.googleapis.com/auth/webmasters.readonly",
 )
+
+
+def browser_event_url(workspace: Workspace, product: Product) -> str:
+    return f"/v1/workspaces/{workspace.id}/products/{product.id}/analytics/events"
 
 
 class GoogleSearchFake(FakeSearchProvider):
@@ -163,8 +168,8 @@ def connect(
     client: TestClient, user: User, workspace: Workspace, product: Product
 ) -> tuple[dict[str, object], str]:
     response = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/connect",
-        json={"provider": "google", "returnPath": f"/products/{product.id}?tab=search"},
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/connect",
+        json={"provider": "google", "returnPath": f"/users/products/{product.id}?tab=search"},
         headers=auth(user),
     )
     assert response.status_code == 200, response.text
@@ -182,21 +187,21 @@ def connect_and_select(
 ) -> dict[str, object]:
     _, state = connect(client, user, workspace, product)
     callback = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "code", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
     )
     assert callback.status_code == 307
     properties = client.get(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/properties",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/properties",
         headers=auth(user),
     ).json()
     property_id = next(
         item["id"] for item in properties if item["providerPropertyId"] == "sc-domain:example.com"
     )
     selected = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
         json={"propertyId": property_id},
         headers=auth(user),
     )
@@ -255,7 +260,7 @@ def test_connect_enforces_admin_product_tenancy_and_active_website(
         DeterministicFakeIntegrationCredentialVault,
     ],
 ) -> None:
-    client, sessions, _, _ = search_client
+    client, sessions, provider, _ = search_client
     assert client.portal is not None
     owner, workspace, product, _ = client.portal.call(seed, sessions)
 
@@ -284,28 +289,31 @@ def test_connect_enforces_admin_product_tenancy_and_active_website(
 
     payload, _ = connect(client, owner, workspace, product)
     forbidden = client.post(
-        f"/api/v1/workspaces/{viewer_workspace.id}/products/{viewer_product.id}/search/connect",
+        f"/v1/workspaces/{viewer_workspace.id}/products/{viewer_product.id}/search/connect",
         json={"provider": "google"},
         headers=auth(viewer),
     )
     hidden = client.post(
-        f"/api/v1/workspaces/{viewer_workspace.id}/products/{product.id}/search/connect",
+        f"/v1/workspaces/{viewer_workspace.id}/products/{product.id}/search/connect",
         json={"provider": "google"},
         headers=auth(owner),
     )
     inactive = client.post(
-        f"/api/v1/workspaces/{no_site_workspace.id}/products/{no_site_product.id}/search/connect",
+        f"/v1/workspaces/{no_site_workspace.id}/products/{no_site_product.id}/search/connect",
         json={"provider": "google"},
         headers=auth(no_site_user),
     )
     unsupported = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/connect",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/connect",
         json={"provider": "bing"},
         headers=auth(owner),
     )
 
     assert payload["provider"] == "google"
     assert payload["status"] == "authorization_pending"
+    authorize_call = next(call for call in provider.calls if call[0] == "build_authorization_url")
+    authorize_args = cast(tuple[str, str, str], authorize_call[1])
+    assert authorize_args[0] == "http://localhost:8000/v1/integrations/search/google/callback"
     assert forbidden.status_code == 403
     assert hidden.status_code == 404
     assert inactive.status_code == 409
@@ -326,19 +334,19 @@ def test_callback_encrypts_reuses_connection_preserves_refresh_and_caches_proper
     user, workspace, product, session = client.portal.call(seed, sessions)
     _, state = connect(client, user, workspace, product)
     callback = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "code", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
     )
     listed = client.get(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/properties",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/properties",
         headers=auth(user),
     )
 
     assert callback.status_code == 307
     assert callback.headers["location"].endswith(
-        f"/products/{product.id}?tab=search&search=connected"
+        f"/users/products/{product.id}?tab=search&search=connected"
     )
     assert listed.status_code == 200
     statuses = {item["providerPropertyId"]: item["compatibilityStatus"] for item in listed.json()}
@@ -348,6 +356,10 @@ def test_callback_encrypts_reuses_connection_preserves_refresh_and_caches_proper
         "https://www.example.com/": "compatible",
     }
     assert "secret" not in str(listed.json())
+    callback_contract = client.get("/openapi.json").json()["paths"][
+        "/v1/integrations/search/{provider}/callback"
+    ]["get"]
+    assert "307" in callback_contract["responses"]
 
     async def persisted() -> tuple[UUID, dict[str, str], int]:
         async with sessions() as db:
@@ -369,13 +381,13 @@ def test_callback_encrypts_reuses_connection_preserves_refresh_and_caches_proper
     provider.refresh_token = None
     _, second_state = connect(client, user, workspace, product)
     second = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "second", "state": second_state},
         cookies=browser(user, session),
         follow_redirects=False,
     )
     replay = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "second", "state": second_state},
         cookies=browser(user, session),
         follow_redirects=False,
@@ -401,7 +413,7 @@ def test_workspace_revoke_then_same_account_reconnect_reactivates_one_encrypted_
     connect_and_select(client, user, workspace, product, session)
     assert (
         client.delete(
-            f"/api/v1/workspaces/{workspace.id}/search/connections/google",
+            f"/v1/workspaces/{workspace.id}/search/connections/google",
             headers=auth(user),
         ).status_code
         == 204
@@ -409,7 +421,7 @@ def test_workspace_revoke_then_same_account_reconnect_reactivates_one_encrypted_
 
     _, state = connect(client, user, workspace, product)
     response = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "reconnect", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
@@ -500,7 +512,7 @@ def test_different_account_reconnect_disconnects_all_sources_runs_and_old_proper
     )
     _, state = connect(client, user, workspace, product)
     callback = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "different", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
@@ -540,13 +552,13 @@ def test_property_refresh_selection_rejects_other_connection_and_replaces_idempo
     user, workspace, product, session = client.portal.call(seed, sessions)
     _, state = connect(client, user, workspace, product)
     client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "code", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
     )
     properties = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/properties/refresh",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/properties/refresh",
         json={"provider": "google"},
         headers=auth(user),
     ).json()
@@ -584,32 +596,32 @@ def test_property_refresh_selection_rejects_other_connection_and_replaces_idempo
     foreign_id = client.portal.call(add_other_connection_property)
 
     incompatible = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
         json={"propertyId": incompatible_id},
         headers=auth(user),
     )
     foreign = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
         json={"propertyId": str(foreign_id)},
         headers=auth(user),
     )
     first = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
         json={"propertyId": compatible_id},
         headers=auth(user),
     )
     second = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
         json={"propertyId": compatible_id},
         headers=auth(user),
     )
     replacement = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
         json={"propertyId": replacement_id},
         headers=auth(user),
     )
     source = client.get(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/source",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/source",
         headers=auth(user),
     )
 
@@ -642,12 +654,12 @@ def test_property_refresh_retires_reactivates_validates_permissions_and_rotates_
     user, workspace, product, session = client.portal.call(seed, sessions)
     _, state = connect(client, user, workspace, product)
     client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "code", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
     )
-    base = f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search"
+    base = f"/v1/workspaces/{workspace.id}/products/{product.id}/search"
     original = client.get(f"{base}/properties", headers=auth(user)).json()
     retired_id = next(
         item["id"] for item in original if item["providerPropertyId"] == "sc-domain:example.com"
@@ -763,20 +775,20 @@ def test_selection_enqueues_safe_initial_sync_and_manual_sync_is_idempotent(
     user, workspace, product, session = client.portal.call(seed, sessions)
     _, state = connect(client, user, workspace, product)
     client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "code", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
     )
     properties = client.get(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/properties",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/properties",
         headers=auth(user),
     ).json()
     property_id = next(
         item["id"] for item in properties if item["providerPropertyId"] == "sc-domain:example.com"
     )
     selected = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/property-selection",
         json={"propertyId": property_id},
         headers=auth(user),
     )
@@ -813,7 +825,7 @@ def test_selection_enqueues_safe_initial_sync_and_manual_sync_is_idempotent(
 
     metadata = client.portal.call(inspect_and_complete)
     assert metadata["runId"] == initial["id"]
-    url = f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/syncs"
+    url = f"/v1/workspaces/{workspace.id}/products/{product.id}/search/syncs"
     first = client.post(url, json={}, headers={**auth(user), "Idempotency-Key": "manual-1"})
     replay = client.post(url, json={}, headers={**auth(user), "Idempotency-Key": "manual-1"})
     mismatch = client.post(
@@ -822,6 +834,11 @@ def test_selection_enqueues_safe_initial_sync_and_manual_sync_is_idempotent(
         headers={**auth(user), "Idempotency-Key": "manual-1"},
     )
     read = client.get(f"{url}/{first.json()['id']}", headers=auth(user))
+    listed_runs = client.get(url, headers=auth(user))
+    health = client.get(
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/health",
+        headers=auth(user),
+    )
 
     async def seed_viewer() -> tuple[User, Workspace, Product, AuthSession]:
         return await seed(sessions, role=WorkspaceRole.viewer)
@@ -847,19 +864,21 @@ def test_selection_enqueues_safe_initial_sync_and_manual_sync_is_idempotent(
     member_read = client.get(f"{url}/{first.json()['id']}", headers=auth(viewer))
     cross_workspace = client.get(
         (
-            f"/api/v1/workspaces/{viewer_workspace.id}/products/{viewer_product.id}"
+            f"/v1/workspaces/{viewer_workspace.id}/products/{viewer_product.id}"
             f"/search/syncs/{first.json()['id']}"
         ),
         headers=auth(viewer),
     )
     hidden = client.get(
-        f"/api/v1/workspaces/{uuid4()}/products/{product.id}/search/syncs/{first.json()['id']}",
+        f"/v1/workspaces/{uuid4()}/products/{product.id}/search/syncs/{first.json()['id']}",
         headers=auth(user),
     )
 
     assert first.status_code == replay.status_code == 202
     assert first.json()["id"] == replay.json()["id"]
     assert read.status_code == 200
+    assert listed_runs.json()["items"][0]["id"] == first.json()["id"]
+    assert health.json()["activeSyncRunId"] == first.json()["id"]
     assert hidden.status_code == 404
     assert mismatch.status_code == 409
     assert forbidden.status_code == 403
@@ -884,13 +903,13 @@ def test_callback_denial_consumes_state_without_provider_exchange(
     calls_before = list(provider.calls)
 
     denied = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"error": "access_denied", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
     )
     replay = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"error": "access_denied", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
@@ -917,7 +936,7 @@ def test_callback_rejects_missing_scope_and_openapi_exposes_no_credentials(
     _, state = connect(client, user, workspace, product)
 
     callback = client.get(
-        "/api/v1/integrations/search/google/callback",
+        "/v1/integrations/search/google/callback",
         params={"code": "code", "state": state},
         cookies=browser(user, session),
         follow_redirects=False,
@@ -956,7 +975,7 @@ def test_search_read_models_use_site_totals_and_deterministic_aggregates(
     user, workspace, product, session = client.portal.call(seed, sessions)
     selected = connect_and_select(client, user, workspace, product, session)
     source_id = UUID(cast(str, selected["id"]))
-    cutoff = date.today() - timedelta(days=provider.capabilities.finalization_lag_days)
+    cutoff = datetime.now(UTC).date() - timedelta(days=provider.capabilities.finalization_lag_days)
 
     async def seed_metrics() -> None:
         async with sessions() as db:
@@ -1014,7 +1033,7 @@ def test_search_read_models_use_site_totals_and_deterministic_aggregates(
                 (queries[0], pages[0], cutoff, 10, 120, Decimal("4")),
                 (queries[0], pages[1], cutoff, 0, 80, Decimal("8")),
                 (queries[0], pages[0], cutoff - timedelta(days=28), 1, 100, Decimal("10")),
-                (queries[1], pages[1], cutoff, 1, 120, Decimal("30")),
+                (queries[1], pages[1], cutoff, 1, 120, Decimal("8")),
                 (queries[1], pages[1], cutoff - timedelta(days=28), 10, 100, Decimal("20")),
             )
             for query, page, metric_date, clicks, impressions, position in facts:
@@ -1036,7 +1055,7 @@ def test_search_read_models_use_site_totals_and_deterministic_aggregates(
             await db.commit()
 
     client.portal.call(seed_metrics)
-    base = f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search"
+    base = f"/v1/workspaces/{workspace.id}/products/{product.id}/search"
     baseline = client.get(
         f"{base}/baseline", params={"cutoffDate": cutoff.isoformat()}, headers=auth(user)
     )
@@ -1063,6 +1082,10 @@ def test_search_read_models_use_site_totals_and_deterministic_aggregates(
     }
     assert [item["label"] for item in payload["views"]["topGrowingQueries"]] == ["alpha"]
     assert [item["label"] for item in payload["views"]["topDecliningQueries"]] == ["beta"]
+    assert [item["label"] for item in payload["views"]["highImpressionLowCtrPages"]] == [
+        "https://www.example.com/b"
+    ]
+    assert payload["views"]["highImpressionLowCtrPages"][0]["itemKind"] == "page"
     assert [item["label"] for item in payload["views"]["queriesWithoutRelevantPage"]] == [
         "alpha",
         "beta",
@@ -1096,7 +1119,7 @@ def test_read_validation_tenant_hiding_and_openapi_query_aliases(
         return await seed(sessions, role=WorkspaceRole.viewer)
 
     viewer, viewer_workspace, viewer_product, _ = client.portal.call(seed_viewer)
-    base = f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search"
+    base = f"/v1/workspaces/{workspace.id}/products/{product.id}/search"
 
     invalid_order = client.get(
         f"{base}/queries",
@@ -1110,23 +1133,23 @@ def test_read_validation_tenant_hiding_and_openapi_query_aliases(
     )
     invalid_page = client.get(f"{base}/queries", params={"limit": 0}, headers=auth(user))
     hidden = client.get(
-        f"/api/v1/workspaces/{other_workspace.id}/products/{product.id}/search/health",
+        f"/v1/workspaces/{other_workspace.id}/products/{product.id}/search/health",
         headers=auth(other),
     )
     member_pending = client.get(
-        f"/api/v1/workspaces/{other_workspace.id}/products/{other_product.id}/search/baseline",
+        f"/v1/workspaces/{other_workspace.id}/products/{other_product.id}/search/baseline",
         headers=auth(other),
     )
     forbidden_unlink = client.delete(
-        f"/api/v1/workspaces/{viewer_workspace.id}/products/{viewer_product.id}/search/source",
+        f"/v1/workspaces/{viewer_workspace.id}/products/{viewer_product.id}/search/source",
         headers=auth(viewer),
     )
     forbidden_revoke = client.delete(
-        f"/api/v1/workspaces/{viewer_workspace.id}/search/connections/google",
+        f"/v1/workspaces/{viewer_workspace.id}/search/connections/google",
         headers=auth(viewer),
     )
     operation = client.get("/openapi.json").json()["paths"][
-        "/api/v1/workspaces/{workspace_id}/products/{product_id}/search/queries"
+        "/v1/workspaces/{workspace_id}/products/{product_id}/search/queries"
     ]["get"]
     parameter_names = {item["name"] for item in operation["parameters"]}
 
@@ -1137,6 +1160,19 @@ def test_read_validation_tenant_hiding_and_openapi_query_aliases(
     assert member_pending.json()["status"] == "pending"
     assert {"startDate", "endDate", "limit", "offset"}.issubset(parameter_names)
     assert "credential" not in str(operation).lower()
+
+    readiness = client.get(f"{base}/readiness", headers=auth(user))
+    assert readiness.status_code == 200
+    assert readiness.json() == {
+        "requirementLevel": "recommended",
+        "reducedCapabilityAllowed": True,
+        "setupComplete": False,
+        "baselineUsable": False,
+        "blockingReasons": [],
+        "capabilityReductions": ["search_dependent_recommendations_unavailable"],
+        "healthStatus": "not_connected",
+        "activeSyncRunId": None,
+    }
 
 
 def test_product_unlink_and_workspace_revoke_are_scoped_and_idempotent(
@@ -1154,7 +1190,7 @@ def test_product_unlink_and_workspace_revoke_are_scoped_and_idempotent(
     source_id = UUID(cast(str, selected["id"]))
     initial_run = cast(dict[str, object], selected["initialSyncRun"])
     run_id = UUID(cast(str, initial_run["id"]))
-    product_url = f"/api/v1/workspaces/{workspace.id}/products/{product.id}/search/source"
+    product_url = f"/v1/workspaces/{workspace.id}/products/{product.id}/search/source"
 
     async def seed_other_product_source() -> UUID:
         async with sessions() as db:
@@ -1218,9 +1254,13 @@ def test_product_unlink_and_workspace_revoke_are_scoped_and_idempotent(
     )
     assert not any(call[0] == "revoke" for call in provider.calls)
 
-    revoke_url = f"/api/v1/workspaces/{workspace.id}/search/connections/google"
+    revoke_url = f"/v1/workspaces/{workspace.id}/search/connections/google"
     revoked = client.delete(revoke_url, headers=auth(user))
     repeated = client.delete(revoke_url, headers=auth(user))
+    health = client.get(
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/search/health",
+        headers=auth(user),
+    )
 
     async def inspect_revoke() -> tuple[str, str | None, str | None, list[str]]:
         async with sessions() as db:
@@ -1241,6 +1281,9 @@ def test_product_unlink_and_workspace_revoke_are_scoped_and_idempotent(
         ["disconnected", "disconnected"],
     )
     assert sum(call[0] == "revoke" for call in provider.calls) == 1
+    assert health.json()["state"] == "revoked"
+    assert health.json()["canReconnect"] is True
+    assert health.json()["canRevokeWorkspaceConnection"] is False
     calls_before_processing = list(provider.calls)
     service = SearchSyncService(
         sessions=sessions,
@@ -1278,7 +1321,7 @@ def test_workspace_revoke_failure_still_invalidates_locally(
         client.portal.call(corrupt_credentials)
 
     response = client.delete(
-        f"/api/v1/workspaces/{workspace.id}/search/connections/google",
+        f"/v1/workspaces/{workspace.id}/search/connections/google",
         headers=auth(user),
     )
 
@@ -1296,3 +1339,100 @@ def test_workspace_revoke_failure_still_invalidates_locally(
 
     assert response.status_code == 204
     assert client.portal.call(inspect) == ("revoked", None, ["disconnected"], ["cancelled"])
+
+
+def test_browser_telemetry_validates_resources_and_is_idempotent(
+    search_client: tuple[
+        TestClient,
+        async_sessionmaker[AsyncSession],
+        GoogleSearchFake,
+        DeterministicFakeIntegrationCredentialVault,
+    ],
+) -> None:
+    client, sessions, _, _ = search_client
+    assert client.portal is not None
+    user, workspace, product, session = client.portal.call(seed, sessions)
+    connect_and_select(client, user, workspace, product, session)
+    other_user, other_workspace, other_product, _ = client.portal.call(seed, sessions)
+    url = browser_event_url(workspace, product)
+
+    baseline = {
+        "eventName": "search_baseline_viewed",
+        "resourceId": str(product.id),
+    }
+    first = client.post(url, json=baseline, headers={**auth(user), "Idempotency-Key": "baseline"})
+    duplicate = client.post(
+        url, json=baseline, headers={**auth(user), "Idempotency-Key": "baseline"}
+    )
+    compatibility = client.post(
+        url,
+        json={"eventName": "compatibility_route_viewed", "resourceId": str(product.id)},
+        headers={**auth(user), "Idempotency-Key": "compatibility"},
+    )
+    nonexistent = client.post(
+        url,
+        json={"eventName": "search_baseline_viewed", "resourceId": str(uuid4())},
+        headers={**auth(user), "Idempotency-Key": "missing"},
+    )
+    cross_tenant = client.post(
+        url,
+        json={
+            "eventName": "compatibility_route_viewed",
+            "resourceId": str(other_product.id),
+        },
+        headers={**auth(user), "Idempotency-Key": "other-tenant"},
+    )
+    invisible = client.post(
+        url,
+        json={"eventName": "compatibility_route_viewed", "resourceId": str(product.id)},
+        headers={**auth(other_user), "Idempotency-Key": "invisible"},
+    )
+
+    assert first.status_code == 200, first.text
+    assert first.json()["duplicate"] is False
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json() == {**first.json(), "duplicate": True}
+    assert compatibility.status_code == 200, compatibility.text
+    assert nonexistent.status_code == 404
+    assert nonexistent.json()["code"] == "event_resource_not_found"
+    assert cross_tenant.status_code == 404
+    assert invisible.status_code == 404
+    assert other_workspace.id != workspace.id
+
+    async def event_count() -> int:
+        async with sessions() as db:
+            return int(await db.scalar(select(func.count()).select_from(ProductEvent)) or 0)
+
+    assert client.portal.call(event_count) == 4
+
+
+def test_browser_telemetry_rejects_client_fabricated_outcomes(
+    search_client: tuple[
+        TestClient,
+        async_sessionmaker[AsyncSession],
+        GoogleSearchFake,
+        DeterministicFakeIntegrationCredentialVault,
+    ],
+) -> None:
+    client, sessions, _, _ = search_client
+    assert client.portal is not None
+    user, workspace, product, _ = client.portal.call(seed, sessions)
+    url = browser_event_url(workspace, product)
+
+    outcome_event = client.post(
+        url,
+        json={"eventName": "measurement_completed", "resourceId": str(product.id)},
+        headers={**auth(user), "Idempotency-Key": "fabricated-event"},
+    )
+    outcome_metric = client.post(
+        url,
+        json={
+            "eventName": "compatibility_route_viewed",
+            "resourceId": str(product.id),
+            "outcome": "improved",
+        },
+        headers={**auth(user), "Idempotency-Key": "fabricated-metric"},
+    )
+
+    assert outcome_event.status_code == 422
+    assert outcome_metric.status_code == 422

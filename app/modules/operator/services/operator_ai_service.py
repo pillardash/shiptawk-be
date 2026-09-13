@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, TypeAdapter
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.modules.llm.services.llm_execution_service import LLMExecutionService
 from app.modules.operator.models import (
+    ActionEvent,
     ActionRiskReview,
     ApprovalRequest,
     MarketingPlan,
@@ -23,7 +25,7 @@ from app.modules.operator.policies.ai_output_policy import (
     validate_evidence_selection,
     validate_output_compatibility,
 )
-from app.modules.operator.policies.risk_policy import final_risk_outcome
+from app.modules.operator.policies.risk_policy import evaluate_asset_safety, final_risk_outcome
 from app.modules.operator.prompts.prepared_asset_prompt import build_prepared_asset_prompt
 from app.modules.operator.prompts.recommendation_prompt import build_recommendation_prompt
 from app.modules.operator.prompts.risk_review_prompt import build_risk_review_prompt
@@ -35,6 +37,7 @@ from app.modules.operator.schemas.ai_output_schema import (
     RecommendationOutput,
     RiskReviewOutput,
 )
+from app.modules.products.models import Product
 
 RECOMMENDATION_ADAPTER: TypeAdapter[RecommendationOutput] = TypeAdapter(RecommendationOutput)
 ASSET_ADAPTER: TypeAdapter[PreparedAssetOutput] = TypeAdapter(PreparedAssetOutput)
@@ -309,7 +312,6 @@ class OperatorAIService:
         recommendation: OperatorRecommendation,
         output_type: str,
         action_id: UUID,
-        deterministic_risk_outcome: str,
         idempotency_key: str,
         lease_owner: str,
     ) -> tuple[PreparedAsset, ActionRiskReview | None]:
@@ -323,7 +325,61 @@ class OperatorAIService:
             lease_owner=lease_owner,
         )
         if asset.kind == "no_asset":
+            async with self._sessions() as db:
+                action = await db.scalar(
+                    select(PlanAction).where(
+                        PlanAction.workspace_id == asset.workspace_id,
+                        PlanAction.product_id == asset.product_id,
+                        PlanAction.id == action_id,
+                    )
+                )
+                if action is None:
+                    raise ValueError("action_tenant_mismatch")
+                actor_id = await db.scalar(
+                    select(MarketingPlan.created_by_actor_id).where(
+                        MarketingPlan.workspace_id == asset.workspace_id,
+                        MarketingPlan.id == action.plan_id,
+                    )
+                )
+                if actor_id is None:
+                    raise ValueError("action_actor_missing")
+                reason = str(asset.structured_content.get("reason", "no_asset"))
+                previous = action.status
+                action.status = "dismissed"
+                action.approval_status = "not_required"
+                action.dismissed_by_actor_id = actor_id
+                action.dismissed_at = datetime.now(UTC)
+                action.dismissal_reason = reason
+                db.add(
+                    ActionEvent(
+                        workspace_id=asset.workspace_id,
+                        product_id=asset.product_id,
+                        action_id=action.id,
+                        event_type="no_asset",
+                        previous_status=previous,
+                        new_status="dismissed",
+                        actor_id=actor_id,
+                        reason=reason[:500],
+                        details={"assetId": str(asset.id), "revision": asset.revision},
+                    )
+                )
+                await db.commit()
             return asset, None
+        async with self._sessions() as db:
+            product = await db.scalar(
+                select(Product).where(
+                    Product.workspace_id == asset.workspace_id,
+                    Product.id == asset.product_id,
+                )
+            )
+            if product is None:
+                raise ValueError("product_tenant_mismatch")
+            deterministic_risk_outcome = evaluate_asset_safety(
+                asset.structured_content,
+                product.blocked_terms,
+                product.blocked_topics,
+                product.safe_public_boundaries,
+            )
         review = await self.review_risk(
             asset=asset,
             deterministic_outcome=deterministic_risk_outcome,

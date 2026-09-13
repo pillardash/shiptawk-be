@@ -312,6 +312,81 @@ class TestPageImprovementDetector:
             == "website_crawl_failed"
         )
 
+    def test_conversion_path_requires_an_aligned_observed_destination(self) -> None:
+        page: dict[str, object] = {
+            "page_fingerprint": "page",
+            "url": "https://x.test/features",
+            "title": "Title",
+            "meta_description": "Description",
+            "h1s": ["Heading"],
+            "internal_links": ["https://x.test/contact"],
+        }
+        conversion_page: dict[str, object] = {
+            "page_fingerprint": "conversion",
+            "url": "https://x.test/signup",
+            "page_type": "conversion",
+        }
+        search_page: dict[str, object] = {
+            "url_fingerprint": "sp",
+            "url": page["url"],
+            "website_page_fingerprint": "page",
+            "match_status": "matched",
+            "current": metric(impressions=50),
+            "prior": metric(),
+        }
+
+        result = page_detector.detect(
+            data(search_pages=[search_page], website_pages=[page, conversion_page])
+        )[0]
+        assert result.outcome.value == "accepted"
+
+        page["internal_links"] = ["https://x.test/signup/"]
+        assert (
+            reason(
+                page_detector.detect(
+                    data(search_pages=[search_page], website_pages=[page, conversion_page])
+                )
+            )
+            == "no_page_quality_defect"
+        )
+
+    def test_profile_conversion_url_takes_precedence_over_inventory_destinations(self) -> None:
+        value = data(
+            search_pages=[
+                {
+                    "url_fingerprint": "sp",
+                    "url": "https://x.test/features",
+                    "website_page_fingerprint": "page",
+                    "match_status": "matched",
+                    "current": metric(impressions=50),
+                    "prior": metric(),
+                }
+            ],
+            website_pages=[
+                {
+                    "page_fingerprint": "page",
+                    "url": "https://x.test/features",
+                    "title": "Title",
+                    "meta_description": "Description",
+                    "h1s": ["Heading"],
+                    "internal_links": ["https://x.test/demo"],
+                },
+                {
+                    "page_fingerprint": "demo",
+                    "url": "https://x.test/demo",
+                    "page_type": "conversion",
+                },
+            ],
+        )
+        value = value.model_copy(
+            update={
+                "profile": value.profile.model_copy(
+                    update={"conversion_url": "https://x.test/signup"}
+                )
+            }
+        )
+        assert page_detector.detect(value)[0].outcome.value == "accepted"
+
 
 def test_registry_is_exact_ordered_unique_and_rejects_duplicates() -> None:
     assert [(item[0], item[1]) for item in DETECTOR_REGISTRY] == [
@@ -320,7 +395,7 @@ def test_registry_is_exact_ordered_unique_and_rejects_duplicates() -> None:
         ("search_decline", "1"),
         ("shipped_but_not_marketed", "1"),
         ("search_demand_without_dedicated_content", "1"),
-        ("existing_page_needs_improvement", "1"),
+        ("existing_page_needs_improvement", "2"),
     ]
     with pytest.raises(ValueError):
         validate_registry((DETECTOR_REGISTRY[0],) * 6)

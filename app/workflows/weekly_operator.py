@@ -1,21 +1,24 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.outbox import OutboxMetadata, enqueue_outbox_event
-from app.modules.operator.models import MarketingPlan, OperatorRun, PlanAction
+from app.modules.operator.models import MarketingPlan, OperatorRun, OperatorRunSnapshot, PlanAction
+from app.modules.operator.policies.operator_schedule_policy import operator_zone
 from app.modules.operator.services.operator_ai_service import OperatorAIService
 from app.modules.operator.services.weekly_growth_service import (
     create_canonical_plan,
     create_weekly_run,
+    detection_snapshot_summaries,
     finalize_plan,
     select_current_run_opportunities,
 )
 from app.modules.products.models import Product
+from app.modules.products.services.activation_service import require_operator_run_ready
+from app.shared.exceptions import ConflictError
 from app.workflows.opportunity_detection import OpportunityDetectionWorkflow
 
 
@@ -49,8 +52,9 @@ class WeeklyOperatorScheduler:
             )
             for product in products:
                 try:
-                    zone = ZoneInfo(product.operator_timezone)
-                except ZoneInfoNotFoundError:
+                    zone = operator_zone(product.operator_timezone)
+                    await require_operator_run_ready(db, product.workspace_id, product.id)
+                except (ConflictError, ValueError):
                     skipped += 1
                     continue
                 local = current.astimezone(zone)
@@ -110,6 +114,36 @@ class WeeklyOperatorWorkflow:
         self.ai = ai
 
     async def process(
+        self, run_id: UUID, workspace_id: UUID, product_id: UUID
+    ) -> dict[str, object]:
+        try:
+            return await self._process(run_id, workspace_id, product_id)
+        except WeeklyOperatorTenantMismatchError:
+            raise
+        except Exception as exc:
+            async with self.sessions() as db:
+                run = await db.scalar(
+                    select(OperatorRun).where(
+                        OperatorRun.id == run_id,
+                        OperatorRun.workspace_id == workspace_id,
+                        OperatorRun.product_id == product_id,
+                        OperatorRun.run_kind == "weekly_growth",
+                    )
+                )
+                if run is not None and run.status not in {"completed", "stopped"}:
+                    run.status = "failed"
+                    run.failure_category = type(exc).__name__[:64]
+                    run.completed_at = datetime.now(UTC)
+                    summary = dict(run.stage_summary or {})
+                    summary["failure"] = {
+                        "category": run.failure_category,
+                        "stage": run.current_stage,
+                    }
+                    run.stage_summary = summary
+                    await db.commit()
+            raise
+
+    async def _process(
         self, run_id: UUID, workspace_id: UUID, product_id: UUID
     ) -> dict[str, object]:
         async with self.sessions() as db:
@@ -200,6 +234,7 @@ class WeeklyOperatorWorkflow:
                     {
                         "opportunityId": str(opportunity.id),
                         "reason": recommendation.output.get("reason"),
+                        "evidenceIds": recommendation.output.get("evidence_ids", []),
                     }
                 )
             else:
@@ -237,20 +272,29 @@ class WeeklyOperatorWorkflow:
                 recommendation=recommendation,
                 output_type=str(recommendation.output["output_type"]),
                 action_id=action.id,
-                deterministic_risk_outcome="pass",
                 idempotency_key=f"{run_id}:asset:{recommendation.id}:1",
                 lease_owner=str(run_id),
             )
 
         async with self.sessions() as db:
+            snapshot = await db.scalar(
+                select(OperatorRunSnapshot).where(
+                    OperatorRunSnapshot.workspace_id == workspace_id,
+                    OperatorRunSnapshot.product_id == product_id,
+                    OperatorRunSnapshot.operator_run_id == detection_run_id,
+                )
+            )
+            if snapshot is None:
+                raise RuntimeError("Completed detection run has no immutable input snapshot.")
+            shipped_summary, search_summary = detection_snapshot_summaries(snapshot.input_payload)
             plan = await finalize_plan(
                 db,
                 workspace_id=workspace_id,
                 product_id=product_id,
                 plan_id=plan.id,
                 no_recommendations=no_recommendations,
-                shipped_summary={"detectionRunId": str(detection_run_id)},
-                search_summary={"detectionRunId": str(detection_run_id)},
+                shipped_summary=shipped_summary,
+                search_summary=search_summary,
             )
             run = await db.get(OperatorRun, run_id)
             assert run is not None

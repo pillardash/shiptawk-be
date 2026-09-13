@@ -13,6 +13,7 @@ from app.db.outbox import OutboxMetadata, enqueue_outbox_event
 from app.modules.operator.models import OperatorRun
 from app.modules.operator.policies import WRITE_ROLES, require_role
 from app.modules.products.models import Product
+from app.modules.products.services.product_profile_service import require_manual_run_ready
 
 
 class OperatorRunRequest(BaseModel):
@@ -25,7 +26,9 @@ class OperatorRunIdempotencyConflictError(ValueError):
 
 
 class ActiveOperatorRunConflictError(ValueError):
-    pass
+    def __init__(self, message: str, active_run_id: UUID) -> None:
+        self.active_run_id = active_run_id
+        super().__init__(message)
 
 
 class ProductNotFoundError(LookupError):
@@ -58,6 +61,7 @@ async def request_operator_run(
     )
     if product is None:
         raise ProductNotFoundError("Product was not found.")
+    await require_manual_run_ready(db, workspace_id, product_id)
     fingerprint = _fingerprint(request)
     replay = await db.scalar(
         select(OperatorRun).where(
@@ -77,7 +81,7 @@ async def request_operator_run(
         )
         if active is not None:
             raise ActiveOperatorRunConflictError(
-                "Another opportunity detection run is already active for this product."
+                "Another opportunity detection run is already active for this product.", active
             )
     run_id = uuid4()
     del now

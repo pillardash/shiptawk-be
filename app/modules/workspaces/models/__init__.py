@@ -1,7 +1,16 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    String,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, BaseModel
@@ -10,11 +19,21 @@ from app.modules.workspaces.enums import WorkspaceRole as WorkspaceRole
 
 class Workspace(BaseModel):
     __tablename__ = "workspaces"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["id", "activation_product_id"],
+            ["products.workspace_id", "products.id"],
+            name="fk_workspaces_activation_product_tenant",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+    )
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     onboarding_completed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    activation_product_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
 
 
 class WorkspaceMembership(Base):

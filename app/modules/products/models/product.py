@@ -39,6 +39,14 @@ class Product(UuidPrimaryKeyMixin, Base):
         ),
         CheckConstraint("operator_weekday BETWEEN 0 AND 6", name="products_operator_weekday"),
         CheckConstraint("operator_hour BETWEEN 0 AND 23", name="products_operator_hour"),
+        CheckConstraint(
+            "search_mode IN ('connected', 'deferred_reduced', 'required')",
+            name="products_search_mode",
+        ),
+        CheckConstraint(
+            "repository_evidence_mode IN ('undecided', 'connected', 'deferred')",
+            name="products_repository_evidence_mode",
+        ),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(
@@ -100,6 +108,16 @@ class Product(UuidPrimaryKeyMixin, Base):
     )
     operator_email_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    search_mode: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="required", server_default="required"
+    )
+    search_mode_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    repository_evidence_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="undecided", server_default="undecided"
+    )
+    repository_evidence_mode_decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -16,6 +16,7 @@ from app.api.v1.health import router as health_router
 from app.api.v1.router import router as v1_router
 from app.db.base import Base
 from app.modules.achievement_digests.api.router import router as achievement_digests_router
+from app.modules.analytics.api.router import browser_event_router
 from app.modules.analytics.api.router import router as analytics_router
 from app.modules.drafts.api.router import router as drafts_router
 from app.modules.evidence.api.router import router as evidence_router
@@ -24,9 +25,11 @@ from app.modules.identity.api import identity_router
 from app.modules.integrations.api.router import router as integrations_router
 from app.modules.integrations.api.webhook_router import router as webhook_router
 from app.modules.notifications.api.router import router as notifications_router
+from app.modules.operator.api.operator_lookup_router import router as operator_lookup_router
 from app.modules.operator.api.operator_run_router import router as operator_run_router
 from app.modules.operator.api.opportunity_router import router as opportunity_router
 from app.modules.operator.api.weekly_growth_router import router as weekly_growth_router
+from app.modules.products.api.activation_router import router as activation_router
 from app.modules.products.api.product_router import product_router
 from app.modules.search_intelligence.api.search_connection_router import (
     product_search_router,
@@ -68,6 +71,8 @@ EXPECTED_TABLES = {
     "oauth_identities",
     "oauth_transactions",
     "operator_runs",
+    "operator_command_receipts",
+    "operator_recommendation_decisions",
     "operator_run_snapshots",
     "operator_recommendation_evidence",
     "operator_recommendations",
@@ -78,7 +83,10 @@ EXPECTED_TABLES = {
     "opportunity_feedback",
     "opportunity_status_events",
     "plan_actions",
+    "plan_views",
     "prepared_assets",
+    "product_events",
+    "recommendation_usefulness_feedback",
     "publication_attempts",
     "product_repositories",
     "products",
@@ -109,6 +117,7 @@ EXPECTED_TABLES = {
 MODEL_PACKAGES = [
     "app.db.outbox",
     "app.modules.achievement_digests.models",
+    "app.modules.analytics.models",
     "app.modules.drafts.models",
     "app.modules.evidence.models",
     "app.modules.llm.models",
@@ -177,16 +186,19 @@ OWNED_TABLES = {
 }
 
 OWNED_ROUTERS = [
+    activation_router,
     identity_router,
     browser_auth_router,
     health_router,
     achievement_digests_router,
     analytics_router,
+    browser_event_router,
     notifications_router,
     product_router,
     drafts_router,
     evidence_router,
     operator_run_router,
+    operator_lookup_router,
     opportunity_router,
     weekly_growth_router,
     integrations_router,

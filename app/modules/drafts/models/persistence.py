@@ -94,6 +94,7 @@ publication_attempts = Table(
     workspace_column(),
     Column("draft_id", UUID(as_uuid=True), nullable=False),
     Column("command_id", String(255), nullable=False),
+    Column("payload_fingerprint", String(64)),
     Column("status", String(24), nullable=False),
     Column("provider", String(32), nullable=False, server_default="x"),
     Column("provider_receipt", json_type),

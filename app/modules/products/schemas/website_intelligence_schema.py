@@ -2,13 +2,16 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field, StringConstraints, field_validator
+from pydantic import Field, StringConstraints, computed_field, field_validator
 
 from app.modules.products.enums.website_intelligence_enum import (
     WebsiteCapabilityMappingStatus,
+    WebsiteCrawlResultStatus,
     WebsiteCrawlRunStatus,
     WebsiteCrawlTrigger,
     WebsitePageStatus,
+    WebsitePageType,
+    WebsiteReadinessBlockingReason,
     WebsiteSourceStatus,
 )
 from app.modules.products.policies.website_crawl_policy import MAX_CRAWL_PAGES
@@ -62,6 +65,14 @@ class WebsiteCrawlRequest(ApiSchema):
     page_limit: int = Field(default=MAX_CRAWL_PAGES, ge=1, le=MAX_CRAWL_PAGES)
 
 
+class WebsiteCrawlDiscoveryDiagnostics(ApiSchema):
+    discovery_method: Literal["links", "sitemap", "sitemap_and_links", "unknown"] = "unknown"
+    sitemap_urls_attempted: int = 0
+    sitemap_urls_succeeded: int = 0
+    sitemap_pages_discovered: int = 0
+    sitemap_fallback_used: bool = False
+
+
 class WebsiteCrawlRunResponse(ApiSchema):
     id: UUID
     workspace_id: UUID
@@ -82,6 +93,24 @@ class WebsiteCrawlRunResponse(ApiSchema):
     created_at: datetime
     updated_at: datetime
 
+    @computed_field
+    def discovery_diagnostics(self) -> WebsiteCrawlDiscoveryDiagnostics:
+        summary = self.summary
+        method = summary.get("discoveryMethod", "unknown")
+        if method not in {"links", "sitemap", "sitemap_and_links"}:
+            method = "unknown"
+        return WebsiteCrawlDiscoveryDiagnostics(
+            discovery_method=method,
+            sitemap_urls_attempted=_nonnegative_int(summary.get("sitemapUrlsAttempted")),
+            sitemap_urls_succeeded=_nonnegative_int(summary.get("sitemapUrlsSucceeded")),
+            sitemap_pages_discovered=_nonnegative_int(summary.get("sitemapPagesDiscovered")),
+            sitemap_fallback_used=summary.get("sitemapFallbackUsed") is True,
+        )
+
+
+def _nonnegative_int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
 
 class WebsitePageResponse(ApiSchema):
     id: UUID
@@ -92,8 +121,36 @@ class WebsitePageResponse(ApiSchema):
     url: str
     canonical_url: str
     status: WebsitePageStatus
+    crawl_run_id: UUID
+    result_status: WebsiteCrawlResultStatus
+    final_url: str | None
+    http_status: int | None
+    content_type: str | None
+    title: str | None
+    meta_description: str | None
+    summary: str | None
+    headings: list[str]
+    indexable: bool | None
+    indexability_reasons: list[str]
+    fetched_at: datetime | None
+    last_observed_at: datetime
+    page_type: WebsitePageType
+    is_key_page: bool
+    error_code: str | None
+    error_message: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class WebsiteReadinessResponse(ApiSchema):
+    configured: bool
+    active: bool
+    initial_crawl_complete: bool
+    current_run_id: UUID | None
+    current_run_status: WebsiteCrawlRunStatus | None
+    blocking_reasons: list[WebsiteReadinessBlockingReason]
+    latest_attempted_run_id: UUID | None
+    latest_successful_run_id: UUID | None
 
 
 class WebsitePageRelevanceResponse(ApiSchema):

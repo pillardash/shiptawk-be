@@ -6,7 +6,49 @@ on:
   pull_request:
 
 jobs:
-  checks:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Check workflow syntax
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: .github/workflows/ci.yml
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy app scripts tests
+
+      - name: Check OpenAPI contract drift
+        run: uv run python scripts/export_openapi.py --check
+
+      - name: Run deterministic evaluations
+        run: uv run pytest -m evaluation
+
+      - name: Build Docker image
+        run: docker build -t backend-api:ci .
+
+  test:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -25,13 +67,15 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/app_test
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/app_test
-
+      REQUIRE_NO_SKIPS: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,25 +83,31 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --frozen --all-groups
 
-      - name: Check formatting
-        run: uv run ruff format --check .
+      - name: Check fresh and incremental migrations
+        run: uv run python scripts/check_migrations.py
 
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Type check
-        run: uv run mypy app scripts tests
-
-      - name: Apply database migrations
-        run: uv run alembic upgrade head
-
-      - name: Check OpenAPI contract drift
-        run: uv run python scripts/export_openapi.py --check
-
-      - name: Test
+      - name: Run PostgreSQL test suite with coverage
         run: uv run pytest --cov
 
-      - name: Build Docker image
-        run: docker build -t backend-api:ci .
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan dependencies and secrets
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

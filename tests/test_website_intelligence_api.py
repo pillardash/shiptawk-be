@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -28,8 +29,70 @@ from app.modules.products.models import (
     WebsitePage,
     WebsiteSource,
 )
+from app.modules.products.schemas.website_intelligence_schema import (
+    WebsiteCrawlDiscoveryDiagnostics,
+    WebsiteCrawlRunResponse,
+)
+from app.modules.products.services.website_intelligence_service import read_website_readiness
 from app.modules.workspaces.enums import WorkspaceRole
 from app.modules.workspaces.models import Workspace, WorkspaceMembership
+
+
+def test_historical_crawl_diagnostics_safely_default_malformed_summary() -> None:
+    crawl_id, workspace_id, product_id, source_id = uuid4(), uuid4(), uuid4(), uuid4()
+    response = WebsiteCrawlRunResponse.model_validate(
+        {
+            "id": crawl_id,
+            "workspace_id": workspace_id,
+            "product_id": product_id,
+            "source_id": source_id,
+            "status": "succeeded",
+            "trigger": "manual",
+            "schema_version": 1,
+            "page_limit": 50,
+            "pages_discovered": 0,
+            "pages_succeeded": 0,
+            "pages_failed": 0,
+            "summary": {
+                "discoveryMethod": "unsupported",
+                "sitemapUrlsAttempted": True,
+                "sitemapUrlsSucceeded": -1,
+                "sitemapPagesDiscovered": "many",
+            },
+            "started_at": datetime.now(UTC),
+            "completed_at": datetime.now(UTC),
+            "error_code": None,
+            "error_message": None,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+        }
+    )
+
+    diagnostics = cast(WebsiteCrawlDiscoveryDiagnostics, response.discovery_diagnostics)
+    assert diagnostics.discovery_method == "unknown"
+    assert diagnostics.sitemap_urls_attempted == 0
+    assert diagnostics.sitemap_urls_succeeded == 0
+    assert diagnostics.sitemap_pages_discovered == 0
+
+
+@pytest.mark.asyncio
+async def test_readiness_service_reports_unconfigured_product(
+    website_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    _, sessions = website_client
+    user, workspace, _, product = await seed_product(sessions)
+
+    async with sessions() as db:
+        readiness = await read_website_readiness(db, workspace.id, product.id, user.id)
+
+    assert readiness.configured is False
+    assert readiness.active is False
+    assert readiness.initial_crawl_complete is False
+    assert readiness.current_run_id is None
+    assert readiness.blocking_reasons == [
+        "website_not_configured",
+        "initial_crawl_incomplete",
+    ]
 
 
 @pytest.fixture
@@ -79,7 +142,7 @@ def auth(user: User) -> dict[str, str]:
 
 
 def source_url(workspace: Workspace, product: Product) -> str:
-    return f"/api/v1/workspaces/{workspace.id}/products/{product.id}/website"
+    return f"/v1/workspaces/{workspace.id}/products/{product.id}/website"
 
 
 def test_source_is_singleton_normalized_optimistic_and_disconnectable(
@@ -91,6 +154,12 @@ def test_source_is_singleton_normalized_optimistic_and_disconnectable(
     url = source_url(workspace, product)
 
     missing = client.get(url, headers=auth(user))
+    not_ready = client.get(f"{url}/readiness", headers=auth(user))
+    assert not_ready.status_code == 200
+    assert not_ready.json()["blockingReasons"] == [
+        "website_not_configured",
+        "initial_crawl_incomplete",
+    ]
     created = client.post(
         url,
         headers=auth(user),
@@ -155,7 +224,7 @@ def test_read_only_roles_can_read_but_cannot_configure_or_crawl(
         source_url(workspace, product), headers=auth(user), json={"baseUrl": "https://example.com"}
     )
     crawl = client.post(
-        f"/api/v1/workspaces/{workspace.id}/products/{product.id}/website/crawl",
+        f"/v1/workspaces/{workspace.id}/products/{product.id}/website/crawl",
         headers={**auth(user), "Idempotency-Key": "readonly-crawl"},
         json={},
     )
@@ -191,7 +260,7 @@ def test_crawl_requires_key_and_replays_one_run_and_one_metadata_only_event(
     client.post(
         source_url(workspace, product), headers=auth(user), json={"baseUrl": "https://example.com"}
     )
-    url = f"/api/v1/workspaces/{workspace.id}/products/{product.id}/website/crawl"
+    url = f"/v1/workspaces/{workspace.id}/products/{product.id}/website/crawl"
 
     missing_key = client.post(url, headers=auth(user), json={})
     first = client.post(
@@ -264,7 +333,13 @@ def test_pages_health_and_capability_mappings_use_latest_crawl_results(
                 pages_discovered=2,
                 pages_succeeded=1,
                 pages_failed=1,
-                summary={},
+                summary={
+                    "discoveryMethod": "sitemap_and_links",
+                    "sitemapUrlsAttempted": 1,
+                    "sitemapUrlsSucceeded": 1,
+                    "sitemapPagesDiscovered": 2,
+                    "sitemapFallbackUsed": False,
+                },
                 started_at=datetime.now(UTC),
                 completed_at=datetime.now(UTC),
             )
@@ -303,12 +378,15 @@ def test_pages_health_and_capability_mappings_use_latest_crawl_results(
                         status=WebsiteCrawlResultStatus.succeeded,
                         final_url=healthy.url,
                         http_status=200,
+                        content_type="text/html",
                         title="Marketing automation",
+                        meta_description="Evidence-backed growth actions.",
                         headings=[{"text": "Automate product marketing"}],
                         extracted_text=(
                             "Turn product updates into evidence-backed marketing actions."
                         ),
                         content_fingerprint="c" * 64,
+                        is_indexable=True,
                         fetched_at=datetime.now(UTC),
                     ),
                     WebsiteCrawlResult(
@@ -343,8 +421,12 @@ def test_pages_health_and_capability_mappings_use_latest_crawl_results(
             return run
 
     run = client.portal.call(seed_inventory)
-    root = f"/api/v1/workspaces/{workspace.id}/products/{product.id}"
+    root = f"/v1/workspaces/{workspace.id}/products/{product.id}"
     pages = client.get(f"{root}/website/pages?limit=1", headers=auth(user))
+    crawl_pages = client.get(
+        f"{root}/website/pages", params={"crawlRunId": str(run.id)}, headers=auth(user)
+    )
+    readiness = client.get(f"{root}/website/readiness", headers=auth(user))
     health = client.get(f"{root}/website/health", headers=auth(user))
     mappings = client.get(f"{root}/website/capability-mappings", headers=auth(user))
     detail = client.get(f"{root}/website/crawls/{run.id}", headers=auth(user))
@@ -358,11 +440,49 @@ def test_pages_health_and_capability_mappings_use_latest_crawl_results(
         == mappings.status_code
         == detail.status_code
         == relevance.status_code
+        == crawl_pages.status_code
+        == readiness.status_code
         == 200
     )
     assert len(pages.json()) == 1
+    page = pages.json()[0]
+    assert page["crawlRunId"] == str(run.id)
+    assert page["resultStatus"] == "succeeded"
+    assert page["contentType"] == "text/html"
+    assert page["title"] == "Marketing automation"
+    assert page["metaDescription"] == "Evidence-backed growth actions."
+    assert page["summary"] == "Turn product updates into evidence-backed marketing actions."
+    assert page["headings"] == ["Automate product marketing"]
+    assert page["indexable"] is True
+    assert page["pageType"] == "homepage"
+    assert page["isKeyPage"] is True
+    assert "extractedText" not in page
+    assert len(crawl_pages.json()) == 2
+    assert readiness.json() == {
+        "configured": True,
+        "active": True,
+        "initialCrawlComplete": True,
+        "currentRunId": None,
+        "currentRunStatus": None,
+        "blockingReasons": [],
+        "latestAttemptedRunId": str(run.id),
+        "latestSuccessfulRunId": str(run.id),
+    }
     assert health.json()["status"] == "degraded"
     assert health.json()["blockedUrls"] == ["https://example.com/private"]
     assert mappings.json()[0]["capabilityKey"] == "automation"
     assert relevance.json()["page"]["canonicalUrl"] == "https://example.com/"
     assert relevance.json()["score"] > 0
+    assert detail.json()["discoveryDiagnostics"] == {
+        "discoveryMethod": "sitemap_and_links",
+        "sitemapUrlsAttempted": 1,
+        "sitemapUrlsSucceeded": 1,
+        "sitemapPagesDiscovered": 2,
+        "sitemapFallbackUsed": False,
+    }
+
+    missing_crawl = client.get(
+        f"{root}/website/pages", params={"crawlRunId": str(uuid4())}, headers=auth(user)
+    )
+    assert missing_crawl.status_code == 404
+    assert missing_crawl.json()["code"] == "website_crawl_not_found"

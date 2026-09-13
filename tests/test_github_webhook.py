@@ -96,7 +96,7 @@ def payload(repo: str = "acme/api") -> bytes:
 def post(client: TestClient, body: bytes, **header_overrides: str) -> httpx.Response:
     headers = signed_headers(body)
     headers.update(header_overrides)
-    return client.post("/api/v1/webhooks/github", content=body, headers=headers)
+    return client.post("/v1/webhooks/github", content=body, headers=headers)
 
 
 def seed_tracked_repositories(client: TestClient, count: int, repo: str = "acme/api") -> None:
@@ -150,7 +150,7 @@ def test_webhook_rejects_missing_or_bad_signature(
     else:
         headers["X-Hub-Signature-256"] = signature
 
-    response = webhook_client.post("/api/v1/webhooks/github", content=body, headers=headers)
+    response = webhook_client.post("/v1/webhooks/github", content=body, headers=headers)
 
     assert response.status_code == 401
     assert persisted_counts(webhook_client) == (0, 0)
@@ -260,7 +260,7 @@ def test_duplicate_delivery_has_same_outcome_without_duplicate_consumers(
 
     first = post(webhook_client, body)
     second_headers = signed_headers(body, delivery="delivery-1")
-    second = webhook_client.post("/api/v1/webhooks/github", content=body, headers=second_headers)
+    second = webhook_client.post("/v1/webhooks/github", content=body, headers=second_headers)
 
     assert first.status_code == second.status_code == 202
     assert first.json()["consumerCount"] == second.json()["consumerCount"] == 2
@@ -277,4 +277,4 @@ def test_openapi_does_not_expose_restricted_webhook_payload_fields(
 
     assert "payloadCiphertext" not in public_schemas
     assert "payloadKeyVersion" not in public_schemas
-    assert "/api/v1/webhooks/github" in schema["paths"]
+    assert "/v1/webhooks/github" in schema["paths"]

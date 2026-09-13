@@ -73,3 +73,22 @@ async def test_phase5_backfill_left_no_resolvable_product_ids_null() -> None:
         assert (resolvable_plans, resolvable_actions, resolvable_approvals) == (0, 0, 0)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_operator_command_receipt_unique_constraint_exists() -> None:
+    assert DATABASE_URL is not None
+    engine = create_async_engine(DATABASE_URL)
+    try:
+        async with engine.connect() as connection:
+            constraints = await connection.run_sync(
+                lambda sync: inspect(sync).get_unique_constraints("operator_command_receipts")
+            )
+        assert any(
+            item["name"] == "uq_operator_command_receipts_command"
+            and item["column_names"]
+            == ["workspace_id", "product_id", "operation", "resource_id", "idempotency_key"]
+            for item in constraints
+        )
+    finally:
+        await engine.dispose()

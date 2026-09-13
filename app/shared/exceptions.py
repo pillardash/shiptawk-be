@@ -1,10 +1,16 @@
+from typing import Any
+
+
 class AppError(Exception):
     status_code = 500
     code = "app_error"
 
-    def __init__(self, message: str, code: str | None = None) -> None:
+    def __init__(
+        self, message: str, code: str | None = None, *, metadata: dict[str, Any] | None = None
+    ) -> None:
         self.message = message
         self.code = code or self.code
+        self.metadata = metadata or {}
         super().__init__(message)
 
 

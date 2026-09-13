@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.integrations.models import IntegrationConnection
 from app.modules.integrations.providers.github import GitHubInstallation, GitHubRepository
 from app.modules.integrations.repositories import revoke_x_connections
@@ -18,8 +19,8 @@ async def disconnect_x_integration(db: AsyncSession, workspace_id: UUID, actor_i
 
 
 async def attach_github_installation(
-    db: AsyncSession, workspace_id: UUID, installation: GitHubInstallation
-) -> None:
+    db: AsyncSession, workspace_id: UUID, actor_id: UUID, installation: GitHubInstallation
+) -> IntegrationConnection:
     connection = await db.scalar(
         select(IntegrationConnection).where(
             IntegrationConnection.workspace_id == workspace_id,
@@ -27,22 +28,37 @@ async def attach_github_installation(
         )
     )
     if connection is None:
-        db.add(
-            IntegrationConnection(
-                workspace_id=workspace_id,
-                provider="github_app",
-                external_account_id=str(installation.id),
-                external_username=installation.account_login,
-                credentials_ciphertext="server-managed-github-app",
-                credential_key_version="none",
-                idempotency_key=f"github-app:{installation.id}",
-            )
+        connection = IntegrationConnection(
+            workspace_id=workspace_id,
+            provider="github_app",
+            external_account_id=str(installation.id),
+            external_username=installation.account_login,
+            credentials_ciphertext="server-managed-github-app",
+            credential_key_version="none",
+            idempotency_key=f"github-app:{installation.id}",
         )
+        db.add(connection)
+        await db.flush()
     else:
         connection.external_account_id = str(installation.id)
         connection.external_username = installation.account_login
         connection.status = "active"
-    await db.commit()
+    await write_product_event(
+        db,
+        workspace_id=workspace_id,
+        product_id=None,
+        actor_id=actor_id,
+        event_name="github_installation_attached",
+        idempotency_key=f"github-installation-attached:{connection.id}:{installation.id}",
+        resource_type="integration_connection",
+        resource_id=connection.id,
+    )
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return connection
 
 
 async def sync_github_repositories(
@@ -106,3 +122,53 @@ async def update_repository_fields(
         raise NotFoundError("Repository not found.", code="repository_not_found")
     await db.commit()
     return row
+
+
+async def update_repository_tracking(
+    db: AsyncSession,
+    workspace_id: UUID,
+    repo_id: UUID,
+    actor_id: UUID,
+    *,
+    is_tracked: bool,
+) -> Any:
+    row = (
+        await db.execute(
+            select(repos)
+            .where(repos.c.id == repo_id, repos.c.workspace_id == workspace_id)
+            .with_for_update()
+        )
+    ).first()
+    if row is None:
+        raise NotFoundError("Repository not found.", code="repository_not_found")
+    generation = int(row._mapping["tracking_generation"])
+    enabling = is_tracked and not bool(row._mapping["is_tracked"])
+    if enabling:
+        generation += 1
+    updated = (
+        await db.execute(
+            update(repos)
+            .where(repos.c.id == repo_id, repos.c.workspace_id == workspace_id)
+            .values(is_tracked=is_tracked, tracking_generation=generation)
+            .returning(repos)
+        )
+    ).first()
+    assert updated is not None
+    if enabling:
+        await write_product_event(
+            db,
+            workspace_id=workspace_id,
+            product_id=None,
+            actor_id=actor_id,
+            event_name="repository_monitoring_enabled",
+            idempotency_key=f"repository-monitoring-enabled:{repo_id}:{generation}",
+            resource_type="repository",
+            resource_id=repo_id,
+            resource_revision=generation,
+        )
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return updated

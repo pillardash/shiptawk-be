@@ -552,7 +552,9 @@ async def test_resumes_after_completed_day_and_permanent_output_failure_is_termi
     calls_before_retry = len(provider.calls)
     assert (await service.process(run_id))["status"] == "succeeded"
     retried_requests = [
-        cast(SearchPerformanceRequest, item[1]) for item in provider.calls[calls_before_retry:]
+        cast(SearchPerformanceRequest, item[1])
+        for item in provider.calls[calls_before_retry:]
+        if item[0] == "query_performance"
     ]
     assert {request.start_date for request in retried_requests} == {date(2026, 7, 2)}
 

@@ -52,7 +52,8 @@ from app.modules.operator.services.opportunity_feedback_service import (
     dismiss_opportunity,
     supersede_opportunity,
 )
-from app.modules.products.models import Product
+from app.modules.products.enums.product_profile_enum import ProductProfileStatus
+from app.modules.products.models import Product, ProductProfile
 from app.modules.workspaces.enums import WorkspaceRole
 from app.modules.workspaces.models import Workspace, WorkspaceMembership
 
@@ -114,6 +115,18 @@ async def seed_graph(sessions: async_sessionmaker[AsyncSession]) -> Graph:
         other_product = Product(workspace_id=workspace.id, user_id=owner.id, name="Sibling")
         db.add_all([product, other_product])
         await db.flush()
+        db.add(
+            ProductProfile(
+                workspace_id=workspace.id,
+                product_id=product.id,
+                status=ProductProfileStatus.approved,
+                version=1,
+                draft_revision=1,
+                completeness_score=100,
+                approved_at=NOW,
+                approved_by=owner.id,
+            )
+        )
         run = OperatorRun(
             workspace_id=workspace.id,
             product_id=product.id,
@@ -233,7 +246,7 @@ def auth(user: User) -> dict[str, str]:
 
 
 def roots(graph: Graph) -> tuple[str, str]:
-    base = f"/api/v1/workspaces/{graph.workspace.id}/products/{graph.product.id}"
+    base = f"/v1/workspaces/{graph.workspace.id}/products/{graph.product.id}"
     return f"{base}/operator/runs", f"{base}/opportunities"
 
 
@@ -547,7 +560,7 @@ def test_feedback_mutations_replay_and_conflict(
 def test_wrong_workspace_resources_are_hidden(phase4_client: Phase4Client, family: str) -> None:
     client, sessions = phase4_client
     graph = client.portal.call(seed_graph, sessions)
-    base = f"/api/v1/workspaces/{graph.other_workspace.id}/products/{graph.product.id}"
+    base = f"/v1/workspaces/{graph.other_workspace.id}/products/{graph.product.id}"
     paths = {
         "run": f"{base}/operator/runs/{graph.run.id}",
         "evaluation": f"{base}/operator/runs/{graph.run.id}/evaluations/{graph.evaluation.id}",
@@ -557,7 +570,7 @@ def test_wrong_workspace_resources_are_hidden(phase4_client: Phase4Client, famil
     assert client.get(paths[family], headers=auth(graph.outsider)).status_code == 404
 
 
-@pytest.mark.parametrize("path", ["/api/v1/operator/runs", "/api/v1/opportunities"])
+@pytest.mark.parametrize("path", ["/v1/operator/runs", "/v1/opportunities"])
 def test_old_routes_are_absent(phase4_client: Phase4Client, path: str) -> None:
     client, _ = phase4_client
     assert client.get(path).status_code == 404

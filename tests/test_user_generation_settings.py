@@ -43,7 +43,7 @@ def user_settings_client() -> Generator[tuple[TestClient, User], None, None]:
 
     app = FastAPI()
     register_exception_handlers(app)
-    app.include_router(user_settings_router, prefix="/api/v1")
+    app.include_router(user_settings_router, prefix="/v1")
     app.dependency_overrides[get_db] = override_get_db
 
     async def create_data() -> User:
@@ -102,8 +102,8 @@ def test_generation_settings_requires_authentication(
 ) -> None:
     client, _ = user_settings_client
 
-    assert client.get("/api/v1/user/settings").status_code == 401
-    assert client.patch("/api/v1/user/settings", json={}).status_code == 401
+    assert client.get("/v1/user/settings").status_code == 401
+    assert client.patch("/v1/user/settings", json={}).status_code == 401
 
 
 def test_get_generation_settings_is_camel_case_and_exposes_no_credentials(
@@ -111,7 +111,7 @@ def test_get_generation_settings_is_camel_case_and_exposes_no_credentials(
 ) -> None:
     client, user = user_settings_client
 
-    response = client.get("/api/v1/user/settings", headers=auth_headers(user))
+    response = client.get("/v1/user/settings", headers=auth_headers(user))
 
     assert response.status_code == 200
     assert response.json() == {
@@ -153,7 +153,7 @@ def test_patch_replaces_validated_settings_and_preserves_omitted_preferences(
         "emailNotificationsEnabled": True,
     }
 
-    response = client.patch("/api/v1/user/settings", headers=auth_headers(user), json=payload)
+    response = client.patch("/v1/user/settings", headers=auth_headers(user), json=payload)
 
     assert response.status_code == 200
     assert response.json()["voiceProfile"]["phrasesToAvoid"] == ["game changer"]
@@ -162,7 +162,7 @@ def test_patch_replaces_validated_settings_and_preserves_omitted_preferences(
     assert response.json()["achievementDigestEnabled"] is True
     assert response.json()["achievementDigestFrequency"] == "monthly"
 
-    stored = client.get("/api/v1/user/settings", headers=auth_headers(user))
+    stored = client.get("/v1/user/settings", headers=auth_headers(user))
     assert stored.json() == response.json()
 
 
@@ -191,7 +191,7 @@ def test_patch_preserves_frontend_validation_boundaries(
         target = cast(dict[str, object], target[part])
     target[parts[-1]] = value
 
-    response = client.patch("/api/v1/user/settings", headers=auth_headers(user), json=payload)
+    response = client.patch("/v1/user/settings", headers=auth_headers(user), json=payload)
 
     assert response.status_code == 422
     assert response.json()["code"] == "validation_error"

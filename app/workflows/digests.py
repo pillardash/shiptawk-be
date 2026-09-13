@@ -59,7 +59,9 @@ class AchievementDigestWorkflow:
                         achievement_digests.c.should_send.is_(True),
                         achievement_digests.c.sent_at.is_(None),
                         User.is_active.is_(True),
+                        User.deleted_at.is_(None),
                         User.email_notifications_enabled.is_(True),
+                        User.achievement_digest_enabled.is_(True),
                         User.email.is_not(None),
                         or_(
                             Product.id.is_(None),
@@ -74,7 +76,7 @@ class AchievementDigestWorkflow:
         skipped = 0
         for row in rows:
             async with self._sessions() as db:
-                delivered = await deliver_stored_digest(
+                status = await deliver_stored_digest(
                     db,
                     row.workspace_id,
                     row.id,
@@ -88,7 +90,7 @@ class AchievementDigestWorkflow:
                     ),
                     sender=self._sender,
                 )
-            if delivered:
+            if status == "delivered":
                 sent += 1
             else:
                 skipped += 1

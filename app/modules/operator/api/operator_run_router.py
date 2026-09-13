@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from app.api.deps import DbDep, MutationUserDep, get_current_user
 from app.modules.identity.models.users import User
 from app.modules.operator.models import OperatorRun, OpportunityEvaluation
+from app.modules.operator.policies import WRITE_ROLES, require_role
 from app.modules.operator.schemas.operator_api_schema import (
     OperatorRunListSchema,
     OperatorRunRequestSchema,
@@ -21,7 +22,10 @@ from app.modules.operator.services.operator_run_service import (
     ProductNotFoundError,
     request_operator_run,
 )
-from app.modules.operator.services.weekly_growth_service import request_manual_weekly_run
+from app.modules.operator.services.weekly_growth_service import (
+    ActiveWeeklyRunConflictError,
+    request_manual_weekly_run,
+)
 from app.modules.products.models import Product
 from app.modules.workspaces.services import require_active_workspace_role
 from app.shared.exceptions import BadRequestError, ConflictError, NotFoundError
@@ -51,27 +55,33 @@ async def create_run(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> OperatorRunResponseSchema:
     if payload.run_kind == "weekly_growth":
+        await require_role(db, workspace_id, user.id, WRITE_ROLES)
         product = await db.scalar(
             select(Product).where(Product.workspace_id == workspace_id, Product.id == product_id)
         )
         if product is None:
             raise NotFoundError("Product not found.", code="product_not_found")
-        if not product.operator_manual_enabled:
-            raise ConflictError("Manual operator runs are disabled.", code="manual_runs_disabled")
         now = datetime.now(UTC)
         period_start = (now - timedelta(days=now.weekday())).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        run = await request_manual_weekly_run(
-            db,
-            workspace_id=workspace_id,
-            product_id=product_id,
-            actor_id=user.id,
-            period_start=period_start,
-            period_end=period_start + timedelta(days=7),
-            workflow_version="weekly-growth-v1",
-            idempotency_key=idempotency_key,
-        )
+        try:
+            run = await request_manual_weekly_run(
+                db,
+                workspace_id=workspace_id,
+                product_id=product_id,
+                actor_id=user.id,
+                period_start=period_start,
+                period_end=period_start + timedelta(days=7),
+                workflow_version="weekly-growth-v1",
+                idempotency_key=idempotency_key,
+            )
+        except ActiveWeeklyRunConflictError as exc:
+            raise ConflictError(
+                str(exc),
+                code="active_operator_run",
+                metadata={"activeRunId": str(exc.active_run_id), "code": "active_operator_run"},
+            ) from exc
         return OperatorRunResponseSchema.model_validate(run)
     try:
         run = await request_operator_run(
@@ -82,7 +92,13 @@ async def create_run(
             idempotency_key=idempotency_key,
             request=OperatorRunRequest.model_validate(payload.model_dump(exclude={"run_kind"})),
         )
-    except (OperatorRunIdempotencyConflictError, ActiveOperatorRunConflictError) as exc:
+    except ActiveOperatorRunConflictError as exc:
+        raise ConflictError(
+            str(exc),
+            code="active_operator_run",
+            metadata={"activeRunId": str(exc.active_run_id), "code": "active_operator_run"},
+        ) from exc
+    except OperatorRunIdempotencyConflictError as exc:
         raise ConflictError(str(exc), code="operator_run_idempotency_conflict") from exc
     except ProductNotFoundError as exc:
         raise NotFoundError(str(exc), code="product_not_found") from exc

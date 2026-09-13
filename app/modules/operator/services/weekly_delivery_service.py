@@ -1,10 +1,12 @@
 from dataclasses import dataclass
-from html import escape
+from datetime import UTC, datetime
+from json import dumps
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.identity.models.users import User
 from app.modules.operator.models import (
     MarketingPlan,
@@ -12,10 +14,17 @@ from app.modules.operator.models import (
     PreparedAsset,
     WeeklyGrowthDelivery,
 )
+from app.modules.operator.services.canonical_plan_service import resolve_canonical_plan
 from app.modules.operator.services.weekly_growth_service import snapshot_hash
 from app.modules.products.models import Product, product_repositories
 from app.modules.repos.models import repos
-from app.services.email.base import EmailAddress, EmailMessage, EmailService
+from app.services.email.base import (
+    EmailAddress,
+    EmailMessage,
+    EmailSendOutcomeUnknown,
+    EmailService,
+)
+from app.services.email.rendering import EmailSection, render_email
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +69,7 @@ async def build_weekly_email_projection(
             .order_by(PlanAction.position, PlanAction.id)
         )
     )
-    assets = (
+    asset_revisions = (
         list(
             await db.scalars(
                 select(PreparedAsset).where(
@@ -73,6 +82,14 @@ async def build_weekly_email_projection(
         if actions
         else []
     )
+    assets_by_action: dict[UUID, PreparedAsset] = {}
+    for asset in asset_revisions:
+        if asset.action_id is not None and (
+            asset.action_id not in assets_by_action
+            or asset.revision > assets_by_action[asset.action_id].revision
+        ):
+            assets_by_action[asset.action_id] = asset
+    assets = list(assets_by_action.values())
     repository_rows = (
         await db.execute(
             select(repos.c.repo_full_name, product_repositories.c.repo_role)
@@ -91,36 +108,61 @@ async def build_weekly_email_projection(
         )
     ).all()
     snapshot = plan.plan_snapshot
-    shipped = snapshot.get("shipped", {})
-    search = snapshot.get("search", {})
-    lines = [
-        f"Weekly growth plan for {product.name}",
-        "",
-        "What shipped",
-        str(shipped),
-        "",
-        "Search changes",
-        str(search),
-        "",
-        "Best opportunity",
-        actions[0].title if actions else "No evidence-backed opportunity this week.",
-        "",
-        f"Actions ({len(actions)})",
+    shipped = snapshot.get("shippedSummary", {})
+    search = snapshot.get("searchSummary", {})
+    sections = [
+        EmailSection("Search changes", dumps(search, indent=2, sort_keys=True)),
+        EmailSection(
+            "Best opportunity",
+            actions[0].title if actions else "No evidence-backed opportunity this week.",
+        ),
+        EmailSection(
+            f"Actions ({len(actions)})",
+            "\n".join(
+                f"{action.position}. {action.title}: {frontend_url}/history/actions/{action.id}"
+                for action in actions
+            )
+            or "No actions.",
+        ),
+        EmailSection(
+            "Prepared outputs",
+            "\n".join(
+                f"{asset.kind}: {frontend_url}/content/{asset.id}?revision={asset.revision}"
+                for asset in sorted(assets, key=lambda item: (str(item.action_id), item.revision))
+            )
+            or "No prepared outputs.",
+        ),
     ]
-    lines.extend(f"{action.position}. {action.title}" for action in actions)
-    lines.extend(["", "Prepared outputs"])
-    lines.extend(
-        f"{asset.kind}: {frontend_url}/products/{product_id}/assets/"
-        f"{asset.id}?revision={asset.revision}"
-        for asset in sorted(assets, key=lambda item: (str(item.action_id), item.revision))
-    )
-    lines.extend(["", "Repository details"])
-    lines.extend(f"{name} ({role})" for name, role in repository_rows)
-    text = "\n".join(lines)
-    return WeeklyEmailProjection(
+    if repository_rows:
+        sections.insert(0, EmailSection("What shipped", dumps(shipped, indent=2, sort_keys=True)))
+        sections.append(
+            EmailSection(
+                "Repository details",
+                "\n".join(f"{name} ({role})" for name, role in repository_rows),
+            )
+        )
+    else:
+        sections.insert(
+            0,
+            EmailSection(
+                "Evidence sources",
+                "Website and Search Console evidence were used. Shipping evidence was not "
+                "configured and was not evaluated.",
+            ),
+        )
+    content = render_email(
         subject=f"{product.name}: weekly growth plan",
-        text=text,
-        html=f"<pre>{escape(text)}</pre>",
+        preheader=f"Your weekly growth plan for {product.name} is ready.",
+        heading=f"Weekly growth plan for {product.name}",
+        body="Review the evidence-backed opportunities and prepared outputs for this week.",
+        sections=sections,
+        action_label="Review weekly plan",
+        action_url=f"{frontend_url}/history/runs/{plan.operator_run_id}",
+    )
+    return WeeklyEmailProjection(
+        subject=content.subject,
+        text=content.text,
+        html=content.html or "",
         snapshot_hash=snapshot_hash(plan),
     )
 
@@ -141,6 +183,19 @@ class WeeklyGrowthEmailWorkflow:
         self, plan_id: UUID, workspace_id: UUID, product_id: UUID, plan_revision: int
     ) -> dict[str, object]:
         async with self.sessions() as db:
+            canonical = await resolve_canonical_plan(
+                db, workspace_id=workspace_id, product_id=product_id
+            )
+            if (
+                canonical.plan is None
+                or canonical.plan.id != plan_id
+                or (canonical.plan.plan_revision or 1) != plan_revision
+            ):
+                return {
+                    "status": "suppressed",
+                    "reason": "superseded_plan_revision",
+                    "planId": str(plan_id),
+                }
             product = await db.scalar(
                 select(Product).where(
                     Product.workspace_id == workspace_id, Product.id == product_id
@@ -150,9 +205,16 @@ class WeeklyGrowthEmailWorkflow:
                 product.weekly_growth_operator_enabled and product.operator_email_enabled
             ):
                 return {"status": "suppressed", "planId": str(plan_id)}
-            recipient = await db.scalar(select(User.email).where(User.id == product.user_id))
-            if not recipient:
+            user = await db.scalar(select(User).where(User.id == product.user_id))
+            if (
+                user is None
+                or not user.is_active
+                or user.deleted_at is not None
+                or not user.email_notifications_enabled
+                or not user.email
+            ):
                 return {"status": "suppressed", "planId": str(plan_id)}
+            recipient = user.email
             projection = await build_weekly_email_projection(
                 db,
                 workspace_id=workspace_id,
@@ -168,8 +230,12 @@ class WeeklyGrowthEmailWorkflow:
                     WeeklyGrowthDelivery.idempotency_key == key,
                 )
             )
-            if delivery is not None and delivery.status == "delivered":
-                return {"status": "delivered", "deliveryId": str(delivery.id), "duplicate": True}
+            if delivery is not None and delivery.status in {"delivered", "unknown_outcome"}:
+                return {
+                    "status": delivery.status,
+                    "deliveryId": str(delivery.id),
+                    "duplicate": True,
+                }
             if delivery is None:
                 delivery = WeeklyGrowthDelivery(
                     workspace_id=workspace_id,
@@ -185,7 +251,7 @@ class WeeklyGrowthEmailWorkflow:
                 db.add(delivery)
                 await db.commit()
             try:
-                self.email_service.send(
+                receipt = self.email_service.send(
                     EmailMessage(
                         to=[EmailAddress(recipient)],
                         subject=projection.subject,
@@ -193,15 +259,35 @@ class WeeklyGrowthEmailWorkflow:
                         html=projection.html,
                     )
                 )
+            except EmailSendOutcomeUnknown:
+                delivery.status = "unknown_outcome"
+                await db.commit()
+                return {
+                    "status": "unknown_outcome",
+                    "deliveryId": str(delivery.id),
+                    "duplicate": False,
+                }
             except Exception:
                 delivery.status = "failed"
                 await db.commit()
                 raise
             delivery.status = "delivered"
-            delivery.provider_delivery_id = key
-            delivery.provider_receipt = {"idempotencyKey": key}
-            from datetime import UTC, datetime
-
+            if receipt is not None:
+                delivery.provider_delivery_id = receipt.message_id
+                delivery.provider_receipt = {
+                    "acceptedRecipients": list(receipt.accepted_recipients)
+                }
             delivery.delivered_at = datetime.now(UTC)
+            await write_product_event(
+                db,
+                workspace_id=workspace_id,
+                product_id=product_id,
+                actor_id=None,
+                event_name="weekly_email_delivered",
+                idempotency_key=f"weekly-email-delivered:{delivery.id}",
+                resource_type="weekly_growth_delivery",
+                resource_id=delivery.id,
+                resource_revision=plan_revision,
+            )
             await db.commit()
             return {"status": "delivered", "deliveryId": str(delivery.id), "duplicate": False}

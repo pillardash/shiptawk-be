@@ -5,7 +5,11 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.search_intelligence.enums.search_intelligence_enum import SearchBaselineView
+from app.modules.search_intelligence.enums.search_intelligence_enum import (
+    SearchBaselineItemKind,
+    SearchBaselineView,
+    SearchCapabilityReduction,
+)
 from app.modules.search_intelligence.models import SearchDailyMetric
 from app.modules.search_intelligence.policies.search_baseline_policy import (
     BASELINE_POLICY_VERSION,
@@ -14,6 +18,7 @@ from app.modules.search_intelligence.policies.search_baseline_policy import (
     baseline_status,
     calculate_complete_periods,
     classify_query_baseline,
+    is_high_impression_low_ctr_page,
 )
 from app.modules.search_intelligence.policies.search_health_policy import search_health_state
 from app.modules.search_intelligence.providers.search.search_provider import (
@@ -40,6 +45,7 @@ from app.modules.search_intelligence.schemas.search_read_schema import (
     SearchPeriod,
     SearchQueryItem,
     SearchQueryPageResponse,
+    SearchReadinessResponse,
 )
 from app.modules.search_intelligence.services.search_connection_service import (
     GOOGLE_PROVIDER,
@@ -74,6 +80,8 @@ def _comparison(
     label: str,
     current_rows: list[SearchDailyMetric],
     prior_rows: list[SearchDailyMetric],
+    *,
+    item_kind: SearchBaselineItemKind,
 ) -> SearchComparisonItem:
     current = _metrics(current_rows)
     prior = _metrics(prior_rows)
@@ -84,6 +92,7 @@ def _comparison(
         prior=prior,
         click_change=current.clicks - prior.clicks,
         impression_change=current.impressions - prior.impressions,
+        item_kind=item_kind,
     )
 
 
@@ -171,6 +180,7 @@ async def read_baseline(
         top_declining_pages=[],
         queries_within_striking_distance=[],
         high_impression_low_ctr=[],
+        high_impression_low_ctr_pages=[],
         newly_appearing_queries=[],
         queries_without_relevant_page=[],
     )
@@ -249,7 +259,13 @@ async def read_baseline(
         if query is None:
             continue
         current_rows, prior_rows = split(query_rows)
-        item = _comparison(query_id, query.query_text, current_rows, prior_rows)
+        item = _comparison(
+            query_id,
+            query.query_text,
+            current_rows,
+            prior_rows,
+            item_kind=SearchBaselineItemKind.query,
+        )
         matched = any(
             row.page_id in pages and pages[row.page_id].match_status == "matched"
             for row in current_rows
@@ -270,7 +286,15 @@ async def read_baseline(
         if page is None:
             continue
         current_rows, prior_rows = split(page_rows)
-        page_items.append(_comparison(page_id, page.original_url, current_rows, prior_rows))
+        page_items.append(
+            _comparison(
+                page_id,
+                page.original_url,
+                current_rows,
+                prior_rows,
+                item_kind=SearchBaselineItemKind.page,
+            )
+        )
 
     def query_view(view: SearchBaselineView, *, reverse: bool = True) -> list[SearchComparisonItem]:
         selected = [item for item, views in query_items if view in views]
@@ -287,6 +311,18 @@ async def read_baseline(
     declining_pages = [item for item in page_items if item.click_change < 0]
     growing_pages.sort(key=lambda item: (-item.click_change, item.label.casefold(), str(item.id)))
     declining_pages.sort(key=lambda item: (item.click_change, item.label.casefold(), str(item.id)))
+    low_ctr_pages = [
+        item
+        for item in page_items
+        if is_high_impression_low_ctr_page(
+            current_clicks=item.current.clicks,
+            current_impressions=item.current.impressions,
+            current_position=item.current.average_position,
+        )
+    ]
+    low_ctr_pages.sort(
+        key=lambda item: (-item.current.impressions, item.label.casefold(), str(item.id))
+    )
     warnings: list[str] = []
     runs = await source_runs(db, workspace_id, product_id, source.id)
     if any(
@@ -319,6 +355,7 @@ async def read_baseline(
                 SearchBaselineView.queries_within_striking_distance
             ),
             high_impression_low_ctr=query_view(SearchBaselineView.high_impression_low_ctr),
+            high_impression_low_ctr_pages=low_ctr_pages[:BASELINE_VIEW_LIMIT],
             newly_appearing_queries=query_view(SearchBaselineView.newly_appearing_queries),
             queries_without_relevant_page=query_view(
                 SearchBaselineView.queries_without_confident_page
@@ -560,13 +597,53 @@ async def read_health(
         expected_complete_date=expected,
         freshness_lag_days=max(0, (expected - data_through).days) if data_through else None,
         active_run_status=active.status if active else None,
+        active_sync_run_id=active.id if active else None,
         failure_category=(
             _public_failure_category(last.failure_category)
             if last and last.status == "failed"
             else None
         ),
         warnings=warnings,
+        can_reconnect=connection is None or connection.status in {"expired", "revoked", "error"},
+        can_change_property=connection is not None and connection.status == "active",
+        can_resync=source is not None and source.status == "active" and active is None,
+        can_disconnect_product=source is not None and source.status == "active",
+        can_revoke_workspace_connection=(connection is not None and connection.status != "revoked"),
     )
 
 
-__all__ = ["read_baseline", "read_health", "read_pages", "read_queries"]
+async def read_readiness(
+    db: AsyncSession,
+    *,
+    workspace_id: UUID,
+    product_id: UUID,
+    actor_id: UUID,
+    capabilities: SearchProviderCapabilities,
+    now: datetime | None = None,
+) -> SearchReadinessResponse:
+    health = await read_health(
+        db,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        actor_id=actor_id,
+        capabilities=capabilities,
+        now=now,
+    )
+    setup_complete = health.state in {"syncing", "healthy", "stale", "no_data", "error"}
+    baseline_usable = health.state in {"healthy", "stale"}
+    reductions = (
+        []
+        if baseline_usable
+        else [SearchCapabilityReduction.search_dependent_recommendations_unavailable]
+    )
+    return SearchReadinessResponse(
+        setup_complete=setup_complete,
+        baseline_usable=baseline_usable,
+        blocking_reasons=[],
+        capability_reductions=reductions,
+        health_status=health.state,
+        active_sync_run_id=health.active_sync_run_id,
+    )
+
+
+__all__ = ["read_baseline", "read_health", "read_pages", "read_queries", "read_readiness"]

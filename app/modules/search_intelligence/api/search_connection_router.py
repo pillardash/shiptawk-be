@@ -2,7 +2,7 @@ from typing import Annotated, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import RedirectResponse
 
 from app.api.deps import BrowserSessionDep, DbDep, MutationUserDep, get_current_user
@@ -134,7 +134,19 @@ async def connect_search(
     return SearchAuthorizationResponse(provider=body.provider, authorization_url=authorization_url)
 
 
-@search_callback_router.get("/{provider}/callback")
+@search_callback_router.get(
+    "/{provider}/callback",
+    response_class=RedirectResponse,
+    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    responses={
+        307: {
+            "description": (
+                "Backend-owned redirect to the validated product-bound returnPath with "
+                "search=connected, search=denied, or search=error."
+            )
+        }
+    },
+)
 async def search_callback(
     provider: str,
     request: Request,

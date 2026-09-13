@@ -19,12 +19,17 @@ def get_request_id(request: Request) -> str:
     return str(getattr(request.state, "request_id", "-"))
 
 
-def error_payload(request: Request, detail: str, code: str) -> dict[str, Any]:
-    return ErrorResponse(
+def error_payload(
+    request: Request, detail: str, code: str, metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    payload = ErrorResponse(
         detail=detail,
         code=code,
         request_id=get_request_id(request),
     ).model_dump(by_alias=True)
+    if metadata:
+        payload["metadata"] = metadata
+    return payload
 
 
 def format_error_field(location: tuple[int | str, ...]) -> str:
@@ -46,7 +51,7 @@ def validation_errors(exc: RequestValidationError) -> list[ValidationErrorItem]:
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
-        content=error_payload(request, exc.message, exc.code),
+        content=error_payload(request, exc.message, exc.code, exc.metadata),
     )
 
 

@@ -13,7 +13,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 CONTRACT_ENVIRONMENT = {
     "ALLOWED_HOSTS": "*",
-    "API_PREFIX": "/api/v1",
+    "API_PREFIX": "/v1",
     "APP_ENV": "test",
     "APP_NAME": "Backend API",
     "APP_VERSION": "0.1.0",

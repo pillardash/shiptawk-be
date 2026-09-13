@@ -8,6 +8,7 @@ from app.bootstrap.search_intelligence import SearchIntelligenceResources
 from app.modules.identity.models.users import User
 from app.modules.search_intelligence.schemas.search_sync_schema import (
     SearchSyncRequest,
+    SearchSyncRunListResponse,
     SearchSyncRunResponse,
 )
 from app.modules.search_intelligence.services.search_connection_service import (
@@ -15,6 +16,7 @@ from app.modules.search_intelligence.services.search_connection_service import (
     require_product_access,
 )
 from app.modules.search_intelligence.services.search_sync_service import (
+    list_search_syncs,
     read_search_sync,
     request_search_sync,
 )
@@ -79,6 +81,20 @@ async def get_search_sync(
             product_id=product_id,
             run_id=sync_run_id,
         )
+    )
+
+
+@search_sync_router.get("", response_model=SearchSyncRunListResponse)
+async def get_search_syncs(
+    workspace_id: UUID,
+    product_id: UUID,
+    current_user: CurrentUserDep,
+    db: DbDep,
+) -> SearchSyncRunListResponse:
+    await require_product_access(db, workspace_id, product_id, current_user.id, write=False)
+    runs = await list_search_syncs(db, workspace_id=workspace_id, product_id=product_id)
+    return SearchSyncRunListResponse(
+        items=[SearchSyncRunResponse.model_validate(run) for run in runs]
     )
 
 

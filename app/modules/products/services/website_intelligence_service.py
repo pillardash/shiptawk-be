@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -7,12 +8,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.outbox import OutboxMetadata, enqueue_outbox_event
+from app.modules.analytics.services.product_event_service import write_product_event
 from app.modules.products.enums.website_intelligence_enum import (
     WebsiteCrawlResultStatus,
+    WebsiteCrawlRunStatus,
+    WebsitePageType,
+    WebsiteReadinessBlockingReason,
     WebsiteSourceStatus,
 )
 from app.modules.products.models import (
     WebsiteCapabilityMapping,
+    WebsiteCrawlResult,
     WebsiteCrawlRun,
     WebsitePage,
     WebsiteSource,
@@ -32,11 +38,12 @@ from app.modules.products.repositories.website_intelligence_repository import (
     get_crawl_run,
     get_website_source,
     insert_or_replay_crawl,
+    latest_attempted_crawl_run,
     latest_crawl_run,
+    latest_successful_crawl_run,
     list_capability_mappings,
     list_crawl_observations,
     list_crawl_runs,
-    list_pages,
 )
 from app.modules.products.schemas.website_intelligence_schema import (
     WebsiteCrawlRequest,
@@ -44,6 +51,7 @@ from app.modules.products.schemas.website_intelligence_schema import (
     WebsiteHealthResponse,
     WebsitePageRelevanceResponse,
     WebsitePageResponse,
+    WebsiteReadinessResponse,
     WebsiteSourceWrite,
 )
 from app.modules.workspaces.enums import WorkspaceRole
@@ -52,6 +60,7 @@ from app.shared.exceptions import ConflictError, ForbiddenError, NotFoundError
 
 DISCONNECT_ROLES = frozenset({WorkspaceRole.owner, WorkspaceRole.admin})
 CRAWL_EVENT_NAME = "website/crawl.requested"
+_WHITESPACE = re.compile(r"\s+")
 
 
 async def _read_access(
@@ -137,6 +146,17 @@ async def save_source(
             updated_by=user_id,
         )
         db.add(source)
+        await db.flush()
+        await write_product_event(
+            db,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            actor_id=user_id,
+            event_name="website_connected",
+            idempotency_key=f"website-connected:{source.id}",
+            resource_type="website_source",
+            resource_id=source.id,
+        )
     else:
         if payload.expected_updated_at is None or not _same_instant(
             payload.expected_updated_at, source.updated_at
@@ -284,11 +304,133 @@ async def read_pages(
     product_id: UUID,
     user_id: UUID,
     *,
+    crawl_run_id: UUID | None,
     limit: int,
     offset: int,
-) -> list[WebsitePage]:
+) -> list[WebsitePageResponse]:
     await _read_access(db, workspace_id, product_id, user_id)
-    return await list_pages(db, workspace_id, product_id, limit=limit, offset=offset)
+    source = await get_website_source(db, workspace_id, product_id)
+    crawl = (
+        await get_crawl_run(db, workspace_id, product_id, crawl_run_id)
+        if crawl_run_id is not None
+        else await latest_successful_crawl_run(db, workspace_id, product_id)
+    )
+    if crawl_run_id is not None and crawl is None:
+        raise NotFoundError("Website crawl not found.", code="website_crawl_not_found")
+    if crawl is None or source is None:
+        return []
+    rows = await list_crawl_observations(
+        db, workspace_id, product_id, crawl.id, limit=limit, offset=offset
+    )
+    return [_page_response(page, result, source) for page, result in rows]
+
+
+def _safe_excerpt(value: str | None, *, limit: int = 300) -> str | None:
+    if not value:
+        return None
+    cleaned = _WHITESPACE.sub(" ", value).strip()
+    if not cleaned:
+        return None
+    return cleaned if len(cleaned) <= limit else f"{cleaned[: limit - 3].rstrip()}..."
+
+
+def _page_type(page: WebsitePage, source: WebsiteSource) -> WebsitePageType:
+    url = page.canonical_url.rstrip("/")
+    if url == source.normalized_base_url.rstrip("/"):
+        return WebsitePageType.homepage
+    if source.documentation_url and url.startswith(source.documentation_url.rstrip("/")):
+        return WebsitePageType.documentation
+    if source.blog_url and url.startswith(source.blog_url.rstrip("/")):
+        return WebsitePageType.blog
+    path = url.split("?", 1)[0].lower()
+    if any(segment in path for segment in ("/pricing", "/plans")):
+        return WebsitePageType.pricing
+    if any(segment in path for segment in ("/signup", "/register", "/contact", "/demo")):
+        return WebsitePageType.conversion
+    if any(segment in path for segment in ("/product", "/features", "/solutions")):
+        return WebsitePageType.product
+    return WebsitePageType.other
+
+
+def _page_response(
+    page: WebsitePage, result: WebsiteCrawlResult, source: WebsiteSource
+) -> WebsitePageResponse:
+    # Kept local to the public projection so raw extracted text never crosses the API boundary.
+    page_type = _page_type(page, source)
+    headings = [
+        excerpt
+        for heading in result.headings[:10]
+        if (excerpt := _safe_excerpt(str(heading.get("text", "")), limit=160)) is not None
+    ]
+    return WebsitePageResponse(
+        id=page.id,
+        workspace_id=page.workspace_id,
+        product_id=page.product_id,
+        source_id=page.source_id,
+        first_discovered_run_id=page.first_discovered_run_id,
+        url=page.url,
+        canonical_url=page.canonical_url,
+        status=page.status,
+        crawl_run_id=result.crawl_run_id,
+        result_status=result.status,
+        final_url=result.final_url,
+        http_status=result.http_status,
+        content_type=result.content_type,
+        title=_safe_excerpt(result.title, limit=200),
+        meta_description=_safe_excerpt(result.meta_description, limit=300),
+        summary=_safe_excerpt(result.extracted_text),
+        headings=headings,
+        indexable=result.is_indexable,
+        indexability_reasons=result.indexability_reasons[:20],
+        fetched_at=result.fetched_at,
+        last_observed_at=result.fetched_at or result.updated_at,
+        page_type=page_type,
+        is_key_page=page_type
+        in {
+            WebsitePageType.homepage,
+            WebsitePageType.product,
+            WebsitePageType.pricing,
+            WebsitePageType.conversion,
+        },
+        error_code=result.error_code,
+        error_message=_safe_excerpt(result.error_message),
+        created_at=page.created_at,
+        updated_at=page.updated_at,
+    )
+
+
+async def read_website_readiness(
+    db: AsyncSession, workspace_id: UUID, product_id: UUID, user_id: UUID
+) -> WebsiteReadinessResponse:
+    await _read_access(db, workspace_id, product_id, user_id)
+    source = await get_website_source(db, workspace_id, product_id)
+    attempted = await latest_attempted_crawl_run(db, workspace_id, product_id)
+    successful = await latest_successful_crawl_run(db, workspace_id, product_id)
+    configured = source is not None
+    active = source is not None and source.status == WebsiteSourceStatus.active
+    blocking_reasons: list[WebsiteReadinessBlockingReason] = []
+    if not configured:
+        blocking_reasons.append(WebsiteReadinessBlockingReason.not_configured)
+    elif not active:
+        blocking_reasons.append(WebsiteReadinessBlockingReason.inactive)
+    if successful is None:
+        blocking_reasons.append(WebsiteReadinessBlockingReason.initial_crawl_incomplete)
+    current = (
+        attempted
+        if attempted is not None
+        and attempted.status in {WebsiteCrawlRunStatus.pending, WebsiteCrawlRunStatus.running}
+        else None
+    )
+    return WebsiteReadinessResponse(
+        configured=configured,
+        active=active,
+        initial_crawl_complete=successful is not None,
+        current_run_id=current.id if current else None,
+        current_run_status=current.status if current else None,
+        blocking_reasons=blocking_reasons,
+        latest_attempted_run_id=attempted.id if attempted else None,
+        latest_successful_run_id=successful.id if successful else None,
+    )
 
 
 async def read_topic_relevance(
@@ -298,6 +440,9 @@ async def read_topic_relevance(
     crawl = await latest_crawl_run(db, workspace_id, product_id)
     if crawl is None:
         raise NotFoundError("Website crawl not found.", code="website_crawl_not_found")
+    source = await get_website_source(db, workspace_id, product_id)
+    if source is None:
+        raise NotFoundError("Website source not found.", code="website_source_not_found")
     rows = await list_crawl_observations(db, workspace_id, product_id, crawl.id)
     pages = [
         RelevancePage(
@@ -314,9 +459,10 @@ async def read_topic_relevance(
     ranked = most_relevant_page(topic, pages)
     if ranked is None:
         raise NotFoundError("No relevant website page found.", code="website_page_not_relevant")
-    page_by_url = {page.canonical_url: page for page, _ in rows}
+    row_by_url = {page.canonical_url: (page, result) for page, result in rows}
+    selected_page, selected_result = row_by_url[ranked.page.url]
     return WebsitePageRelevanceResponse(
-        page=WebsitePageResponse.model_validate(page_by_url[ranked.page.url]),
+        page=_page_response(selected_page, selected_result, source),
         score=ranked.score,
         matched_terms=list(ranked.matched_terms),
     )

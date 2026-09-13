@@ -18,6 +18,7 @@ from app.modules.integrations.providers.credential_vault_provider import (
     CredentialVaultError,
     IntegrationCredentialVault,
 )
+from app.modules.products.models import Product
 from app.modules.products.policies.website_url_policy import normalize_website_url
 from app.modules.search_intelligence.models import (
     SearchDailyMetric,
@@ -52,6 +53,7 @@ from app.modules.search_intelligence.repositories.search_sync_repository import 
     get_active_run,
     get_run_by_idempotency,
     get_sync_run,
+    list_scoped_sync_runs,
     load_processing_context,
     page_identity,
     query_identity,
@@ -227,6 +229,12 @@ async def read_search_sync(
     if run is None:
         raise NotFoundError("Search sync not found.", code="search_sync_not_found")
     return run
+
+
+async def list_search_syncs(
+    db: AsyncSession, *, workspace_id: UUID, product_id: UUID
+) -> list[SearchSyncRun]:
+    return await list_scoped_sync_runs(db, workspace_id, product_id)
 
 
 async def create_initial_sync(
@@ -639,6 +647,15 @@ class SearchSyncService:
             )
             if source is not None:
                 source.latest_successful_data_date = run.requested_end_date
+                product = await db.scalar(
+                    select(Product).where(
+                        Product.workspace_id == run.workspace_id,
+                        Product.id == run.product_id,
+                    )
+                )
+                if product is not None:
+                    product.search_mode = "connected"
+                    product.search_mode_decided_at = self._now()
             await db.commit()
 
     async def _release(self, run_id: UUID, lease_owner: str, category: str) -> None:
@@ -764,6 +781,7 @@ __all__ = [
     "SearchSyncScheduler",
     "SearchSyncService",
     "create_initial_sync",
+    "list_search_syncs",
     "read_search_sync",
     "request_search_sync",
 ]

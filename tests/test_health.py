@@ -22,10 +22,18 @@ def test_root_health_endpoint() -> None:
 def test_versioned_health_endpoint() -> None:
     client = TestClient(create_app())
 
-    response = client.get("/api/v1/health")
+    response = client.get("/v1/health")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_legacy_api_v1_prefix_is_not_routed() -> None:
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/health")
+
+    assert response.status_code == 404
 
 
 def test_readiness_endpoint(monkeypatch: MonkeyPatch) -> None:
@@ -35,7 +43,7 @@ def test_readiness_endpoint(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(health_module, "check_database_ready", pass_database_check)
     client = TestClient(create_app())
 
-    response = client.get("/api/v1/ready")
+    response = client.get("/v1/ready")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
@@ -50,7 +58,7 @@ def test_readiness_endpoint_returns_503_when_database_is_unavailable(
     monkeypatch.setattr(health_module, "check_database_ready", fail_database_check)
     client = TestClient(create_app())
 
-    response = client.get("/api/v1/ready", headers={"X-Request-ID": "test-request"})
+    response = client.get("/v1/ready", headers={"X-Request-ID": "test-request"})
 
     assert response.status_code == 503
     assert response.json() == {
@@ -72,7 +80,7 @@ def test_readiness_requires_a_configured_x_publisher_when_x_publishing_is_enable
     app.state.publisher = None
     client = TestClient(app)
 
-    response = client.get("/api/v1/ready")
+    response = client.get("/v1/ready")
 
     assert response.status_code == 503
     assert response.json()["code"] == "publisher_unavailable"

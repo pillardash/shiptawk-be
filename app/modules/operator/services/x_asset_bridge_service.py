@@ -2,11 +2,13 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
 
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.drafts.models import draft_status_events, drafts
 from app.modules.operator.models import ActionRiskReview, PreparedAsset
+from app.modules.operator.schemas.ai_output_schema import XDraft
 from app.modules.products.models import Product, product_repositories
 
 
@@ -30,6 +32,10 @@ async def project_x_asset_to_draft(
     )
     if asset is None:
         return None
+    try:
+        content = TypeAdapter(XDraft).validate_python(asset.structured_content).content.post
+    except ValidationError as exc:
+        raise ValueError("invalid_x_asset_content") from exc
     review = await db.scalar(
         select(ActionRiskReview).where(
             ActionRiskReview.workspace_id == workspace_id,
@@ -64,8 +70,6 @@ async def project_x_asset_to_draft(
     )
     if product is None or repo_id is None:
         return None
-    raw_content = asset.structured_content.get("content", "")
-    content = raw_content if isinstance(raw_content, str) else str(raw_content)
     draft_id = uuid4()
     now = datetime.now(UTC)
     await db.execute(

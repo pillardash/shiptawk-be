@@ -151,10 +151,10 @@ def start_x_oauth(
     client: TestClient,
     workspace: Workspace,
     cookies: dict[str, str],
-    return_path: str = "/settings",
+    return_path: str = "/users/settings",
 ) -> str:
     response = client.get(
-        f"/api/v1/workspaces/{workspace.id}/x/authorize",
+        f"/v1/workspaces/{workspace.id}/x/authorize",
         params={"returnPath": return_path},
         cookies=cookies,
         follow_redirects=False,
@@ -181,16 +181,16 @@ def test_x_oauth_connect_encrypts_credentials_and_exposes_only_safe_connection_f
     state = start_x_oauth(client, workspace, cookies)
 
     callback = client.get(
-        f"/api/v1/workspaces/{workspace.id}/x/callback",
+        f"/v1/workspaces/{workspace.id}/x/callback",
         params={"code": "provider-code", "state": state},
         cookies=cookies,
         follow_redirects=False,
     )
-    listed = client.get(f"/api/v1/workspaces/{workspace.id}/connections", cookies=cookies)
-    status = client.get(f"/api/v1/workspaces/{workspace.id}/x/connection", cookies=cookies)
+    listed = client.get(f"/v1/workspaces/{workspace.id}/connections", cookies=cookies)
+    status = client.get(f"/v1/workspaces/{workspace.id}/x/connection", cookies=cookies)
 
     assert callback.status_code == 307
-    assert callback.headers["location"] == "http://localhost:3000/settings?x=connected"
+    assert callback.headers["location"] == "http://localhost:3000/users/settings?x=connected"
     assert len(provider.exchanges) == 1
     assert provider.exchanges[0].code == "provider-code"
     assert provider.exchanges[0].code_verifier
@@ -249,19 +249,19 @@ def test_x_oauth_state_is_one_time_actor_and_workspace_bound(
     state = start_x_oauth(client, workspace, cookies)
 
     wrong_workspace = client.get(
-        f"/api/v1/workspaces/{other.id}/x/callback",
+        f"/v1/workspaces/{other.id}/x/callback",
         params={"code": "code", "state": state},
         cookies=cookies,
         follow_redirects=False,
     )
     first = client.get(
-        f"/api/v1/workspaces/{workspace.id}/x/callback",
+        f"/v1/workspaces/{workspace.id}/x/callback",
         params={"code": "code", "state": state},
         cookies=cookies,
         follow_redirects=False,
     )
     replay = client.get(
-        f"/api/v1/workspaces/{workspace.id}/x/callback",
+        f"/v1/workspaces/{workspace.id}/x/callback",
         params={"code": "code", "state": state},
         cookies=cookies,
         follow_redirects=False,
@@ -292,14 +292,14 @@ def test_x_oauth_rejects_unsafe_redirect_and_requires_workspace_admin(
     cookies = browser_cookie(user, session)
 
     unsafe = client.get(
-        f"/api/v1/workspaces/{owner_workspace.id}/x/authorize",
+        f"/v1/workspaces/{owner_workspace.id}/x/authorize",
         params={"returnPath": "//attacker.example/steal"},
         cookies=browser_cookie(owner, owner_session),
         follow_redirects=False,
     )
     forbidden = client.get(
-        f"/api/v1/workspaces/{workspace.id}/x/authorize",
-        params={"returnPath": "/settings"},
+        f"/v1/workspaces/{workspace.id}/x/authorize",
+        params={"returnPath": "/users/settings"},
         cookies=cookies,
         follow_redirects=False,
     )
@@ -321,16 +321,16 @@ def test_x_oauth_denial_consumes_state_and_redirects_without_provider_call(
     assert client.portal is not None
     user, workspace, _, session = client.portal.call(seed_identity_async, sessions)
     cookies = browser_cookie(user, session)
-    state = start_x_oauth(client, workspace, cookies, "/onboarding?step=connect-twitter")
+    state = start_x_oauth(client, workspace, cookies, "/users/onboarding?step=connect-twitter")
 
     denied = client.get(
-        f"/api/v1/workspaces/{workspace.id}/x/callback",
+        f"/v1/workspaces/{workspace.id}/x/callback",
         params={"error": "access_denied", "state": state},
         cookies=cookies,
         follow_redirects=False,
     )
     replay = client.get(
-        f"/api/v1/workspaces/{workspace.id}/x/callback",
+        f"/v1/workspaces/{workspace.id}/x/callback",
         params={"error": "access_denied", "state": state},
         cookies=cookies,
         follow_redirects=False,
@@ -338,7 +338,7 @@ def test_x_oauth_denial_consumes_state_and_redirects_without_provider_call(
 
     assert denied.status_code == 307
     assert denied.headers["location"] == (
-        "http://localhost:3000/onboarding?step=connect-twitter&x=denied"
+        "http://localhost:3000/users/onboarding?step=connect-twitter&x=denied"
     )
     assert replay.status_code == 400
     assert provider.exchanges == []
