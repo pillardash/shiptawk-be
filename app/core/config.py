@@ -699,7 +699,7 @@ class Settings(BaseSettings):
 
     @property
     def sentry_is_enabled(self) -> bool:
-        return bool(self.sentry_dsn)
+        return bool(self.sentry_dsn and self.sentry_dsn.strip())
 
     @property
     def resolved_jobs_redis_url(self) -> str | None:

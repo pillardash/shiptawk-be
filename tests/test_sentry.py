@@ -16,6 +16,16 @@ def test_sentry_disabled_without_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == []
 
 
+@pytest.mark.parametrize("dsn", ["", "   "])
+def test_sentry_disabled_with_blank_dsn(dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr("app.core.sentry.sentry_sdk.init", lambda **kwargs: calls.append(kwargs))
+
+    configure_sentry(Settings(sentry_dsn=dsn))
+
+    assert calls == []
+
+
 def test_sentry_enabled_with_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
     monkeypatch.setattr("app.core.sentry.sentry_sdk.init", lambda **kwargs: calls.append(kwargs))
