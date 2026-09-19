@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.security import generate_pkce_verifier, generate_token, hash_token
+from app.modules.identity.models.credentials import PasswordCredential
 from app.modules.identity.models.oauth import AuthSession, OAuthIdentity, OAuthTransaction
 from app.modules.identity.models.users import User
 from app.modules.identity.services.sessions import create_refresh_session_record
@@ -296,6 +297,15 @@ async def delete_user_account(db: AsyncSession, user: User) -> None:
         update(OAuthIdentity)
         .where(OAuthIdentity.user_id == user.id, OAuthIdentity.deleted_at.is_(None))
         .values(deleted_at=now)
+    )
+    await db.execute(
+        update(PasswordCredential)
+        .where(PasswordCredential.user_id == user.id, PasswordCredential.deleted_at.is_(None))
+        .values(
+            email=f"deleted-{user.id}@invalid.local",
+            password_hash=hash_token(generate_token()),
+            deleted_at=now,
+        )
     )
     stored_user = await db.scalar(select(User).where(User.id == user.id).with_for_update())
     assert stored_user is not None

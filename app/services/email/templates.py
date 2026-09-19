@@ -14,6 +14,14 @@ def email_verification_template(verification_url: str) -> EmailContent:
     )
 
 
+def email_verification_otp_template(code: str) -> EmailContent:
+    return EmailContent(
+        subject="Your Shiptawk verification code",
+        text=f"Your Shiptawk verification code is {code}. It expires in 10 minutes.",
+        html=None,
+    )
+
+
 def password_reset_template(reset_url: str) -> EmailContent:
     return render_email(
         subject="Reset your password",

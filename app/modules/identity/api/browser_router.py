@@ -20,7 +20,10 @@ from app.modules.identity.schemas.oauth import (
     BrowserSessionResponse,
     BrowserWorkspaceUpdate,
     CurrentWorkspaceResponse,
+    EmailVerificationRequest,
     OAuthProviderResponse,
+    PasswordLoginRequest,
+    PasswordRegistrationRequest,
     PrimaryIdentityResponse,
 )
 from app.modules.identity.schemas.users import UserResponse
@@ -32,6 +35,11 @@ from app.modules.identity.services.browser_oauth import (
     list_available_workspaces,
     provision_oauth_session,
     switch_session_workspace,
+)
+from app.modules.identity.services.password_auth import (
+    login_with_password,
+    register_password_user,
+    verify_registration_code,
 )
 from app.modules.identity.services.sessions import (
     get_refresh_session,
@@ -142,6 +150,50 @@ def providers(request: Request) -> list[OAuthProviderResponse]:
         OAuthProviderResponse(name=item.name, display_name=item.display_name)
         for item in registry(request).list()
     ]
+
+
+@router.post("/register", status_code=202, response_model=MessageResponse)
+async def register_password_account(
+    payload: PasswordRegistrationRequest, db: DbDep
+) -> MessageResponse:
+    await register_password_user(
+        db, name=payload.name, email=str(payload.email), password=payload.password
+    )
+    return MessageResponse(message="Verification code sent.")
+
+
+@router.post("/verify-email", response_model=MessageResponse)
+async def verify_password_account(payload: EmailVerificationRequest, db: DbDep) -> MessageResponse:
+    await verify_registration_code(db, email=str(payload.email), code=payload.code)
+    return MessageResponse(message="Email verified successfully.")
+
+
+@router.post("/login", response_model=BrowserSessionResponse)
+async def login_password_account(
+    payload: PasswordLoginRequest, request: Request, response: Response, db: DbDep
+) -> BrowserSessionResponse:
+    provisioned = await login_with_password(
+        db,
+        email=str(payload.email),
+        password=payload.password,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    _set_session_cookies(
+        response,
+        user_id=provisioned.user.id,
+        session_id=provisioned.session.id,
+        refresh=provisioned.refresh_token,
+    )
+    user, workspace, role, linked, identity = await get_bound_session(
+        db, user_id=provisioned.user.id, session_id=provisioned.session.id
+    )
+    return BrowserSessionResponse(
+        user=UserResponse.model_validate(user),
+        current_workspace=CurrentWorkspaceResponse(id=workspace.id, name=workspace.name, role=role),
+        linked_providers=linked,
+        primary_identity=_primary_identity(identity),
+    )
 
 
 @router.get("/oauth/{provider_name}/authorize")

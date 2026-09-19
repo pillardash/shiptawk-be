@@ -1,6 +1,8 @@
 from uuid import UUID
 
-from app.modules.identity.schemas.users import UserResponse
+from pydantic import EmailStr, Field
+
+from app.modules.identity.schemas.users import Trimmed120, UserResponse
 from app.shared.schemas import ApiSchema
 
 
@@ -31,3 +33,19 @@ class BrowserSessionResponse(ApiSchema):
 
 class BrowserWorkspaceUpdate(ApiSchema):
     workspace_id: UUID
+
+
+class PasswordRegistrationRequest(ApiSchema):
+    name: Trimmed120
+    email: EmailStr
+    password: str = Field(min_length=12, max_length=128)
+
+
+class EmailVerificationRequest(ApiSchema):
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class PasswordLoginRequest(ApiSchema):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)

@@ -1,4 +1,6 @@
+import base64
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -72,6 +74,31 @@ def generate_token() -> str:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+    encoded_salt = base64.urlsafe_b64encode(salt).decode()
+    encoded_digest = base64.urlsafe_b64encode(digest).decode()
+    return f"scrypt$16384$8$1${encoded_salt}${encoded_digest}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, n, r, p, salt, expected = encoded.split("$", 5)
+        if algorithm != "scrypt":
+            return False
+        actual = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=base64.urlsafe_b64decode(salt),
+            n=int(n),
+            r=int(r),
+            p=int(p),
+        )
+        return hmac.compare_digest(actual, base64.urlsafe_b64decode(expected))
+    except (ValueError, TypeError):
+        return False
 
 
 def generate_pkce_verifier() -> str:

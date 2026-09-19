@@ -28,6 +28,7 @@ from app.shared.schemas import ApiSchema
 class UserResponse(ApiSchema):
     id: UUID
     email: EmailStr | None
+    name: str | None
     is_active: bool
     is_verified: bool
     created_at: datetime

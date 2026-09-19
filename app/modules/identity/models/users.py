@@ -20,6 +20,7 @@ class User(BaseModel):
     )
 
     email: Mapped[str | None] = mapped_column(String(320), index=True, nullable=True)
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Temporary non-secret frontend compatibility fields. OAuthIdentity is authoritative.
     github_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     github_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
