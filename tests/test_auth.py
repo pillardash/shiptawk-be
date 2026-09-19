@@ -100,8 +100,10 @@ def test_password_auth_routes_are_not_public(
     client, _ = auth_client
     openapi = client.get("/openapi.json").json()
 
+    assert "/v1/auth/register" in openapi["paths"]
+    assert "/v1/auth/browser/register" not in openapi["paths"]
+
     for path in (
-        "/v1/auth/register",
         "/v1/auth/login",
         "/v1/auth/forgot-password",
         "/v1/auth/reset-password",

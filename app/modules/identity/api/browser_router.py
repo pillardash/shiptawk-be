@@ -23,7 +23,6 @@ from app.modules.identity.schemas.oauth import (
     EmailVerificationRequest,
     OAuthProviderResponse,
     PasswordLoginRequest,
-    PasswordRegistrationRequest,
     PrimaryIdentityResponse,
 )
 from app.modules.identity.schemas.users import UserResponse
@@ -38,7 +37,6 @@ from app.modules.identity.services.browser_oauth import (
 )
 from app.modules.identity.services.password_auth import (
     login_with_password,
-    register_password_user,
     verify_registration_code,
 )
 from app.modules.identity.services.sessions import (
@@ -150,16 +148,6 @@ def providers(request: Request) -> list[OAuthProviderResponse]:
         OAuthProviderResponse(name=item.name, display_name=item.display_name)
         for item in registry(request).list()
     ]
-
-
-@router.post("/register", status_code=202, response_model=MessageResponse)
-async def register_password_account(
-    payload: PasswordRegistrationRequest, db: DbDep
-) -> MessageResponse:
-    await register_password_user(
-        db, name=payload.name, email=str(payload.email), password=payload.password
-    )
-    return MessageResponse(message="Verification code sent.")
 
 
 @router.post("/verify-email", response_model=MessageResponse)

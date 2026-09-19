@@ -6,8 +6,8 @@ from app.modules.analytics.api.router import browser_event_router
 from app.modules.analytics.api.router import router as analytics_router
 from app.modules.drafts.api.router import router as drafts_router
 from app.modules.evidence.api.router import router as evidence_router
+from app.modules.identity.api import auth_router, identity_router
 from app.modules.identity.api import browser_router as browser_auth_router
-from app.modules.identity.api import identity_router
 from app.modules.integrations.api.router import router as integrations_router
 from app.modules.integrations.api.webhook_router import router as webhook_router
 from app.modules.notifications.api.router import router as notifications_router
@@ -28,6 +28,7 @@ from app.modules.search_intelligence.api.search_read_router import (
 from app.modules.search_intelligence.api.search_sync_router import search_sync_router
 
 router = APIRouter()
+router.include_router(auth_router)
 router.include_router(identity_router)
 router.include_router(browser_auth_router)
 router.include_router(health_router)
