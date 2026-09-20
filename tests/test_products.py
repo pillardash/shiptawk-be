@@ -502,6 +502,23 @@ def test_authorized_workspace_roles_can_create_products(
     assert "userId" not in response.json()
 
 
+def test_product_creation_adds_https_to_bare_website_domain(
+    product_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    client, sessions = product_client
+    assert client.portal is not None
+    user, workspace, *_ = client.portal.call(seed_product_commands, sessions, WorkspaceRole.owner)
+
+    response = client.post(
+        f"/v1/workspaces/{workspace.id}/products",
+        headers={"Authorization": f"Bearer {create_access_token(str(user.id))}"},
+        json=product_payload(websiteUrl="example.com/product"),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["websiteUrl"] == "https://example.com/product"
+
+
 @pytest.mark.parametrize("role", [WorkspaceRole.reviewer, WorkspaceRole.viewer])
 def test_read_only_workspace_roles_cannot_create_products(
     product_client: tuple[TestClient, async_sessionmaker[AsyncSession]], role: WorkspaceRole
@@ -745,6 +762,8 @@ def test_product_context_generation_is_tenant_scoped_idempotent_and_persisted(
             "name": "Shiptawk",
             "description": "An evidence-backed marketing operator for startup teams.",
             "targetAudience": "Technical startup teams",
+            "mainMarket": "Startup marketing software",
+            "mainValueProposition": "Turn product evidence into focused marketing action.",
             "messagingAngle": "Turn verified product progress into marketing action.",
             "toneOverride": "technical",
             "safePublicBoundaries": ["Public releases only"],
@@ -787,6 +806,8 @@ def test_product_context_generation_is_tenant_scoped_idempotent_and_persisted(
     assert first.status_code == replay.status_code == 200
     assert first.json() == replay.json()
     assert first.json()["draft"]["description"].startswith("An evidence-backed")
+    assert first.json()["draft"]["mainMarket"] == "Startup marketing software"
+    assert first.json()["draft"]["mainValueProposition"].startswith("Turn product evidence")
     assert first.json()["draft"]["blockedTerms"] == "secret"
     assert first.json()["confidence"] == 86
     assert len(provider.requests) == 1
@@ -822,7 +843,7 @@ def test_product_context_generation_is_tenant_scoped_idempotent_and_persisted(
     assert run["model"] == "fake-v1"
     assert run["system_prompt"] == "[not persisted]"
     provider_parameters = cast(dict[str, object], run["provider_parameters"])
-    assert provider_parameters["promptVersion"] == "product-context.v1"
+    assert provider_parameters["promptVersion"] == "product-context.v2"
 
 
 def test_saved_product_context_uses_fallbacks_and_marks_low_confidence_for_review() -> None:
@@ -848,6 +869,7 @@ def test_saved_product_context_uses_fallbacks_and_marks_low_confidence_for_revie
 
     assert saved.description == "Shiptawk product context."
     assert saved.target_audience == "Product users"
+    assert saved.main_market == "Software"
     assert response.needs_review is True
     assert response.draft.blocked_terms == "secret"
     assert response.draft.blocked_topics == "roadmap"
@@ -869,7 +891,7 @@ def test_generation_metadata_keeps_telemetry_without_prompt_content() -> None:
 
     assert metadata == {
         "requestParameters": {"temperature": 0},
-        "promptVersion": "product-context.v1",
+        "promptVersion": "product-context.v2",
         "correlationId": "product-context:correlation",
         "llmExecutionId": str(execution_id),
         "usage": {
@@ -896,6 +918,8 @@ async def test_product_context_service_persists_and_reuses_a_deterministic_gener
             "name": "Shiptawk",
             "description": "Evidence-backed marketing for product teams.",
             "targetAudience": "Product teams",
+            "mainMarket": "Product marketing software",
+            "mainValueProposition": "Create consistent marketing from product evidence.",
             "messagingAngle": "Turn releases into reviewed marketing.",
             "toneOverride": "technical",
             "safePublicBoundaries": ["Public releases"],

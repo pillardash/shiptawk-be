@@ -445,7 +445,6 @@ def test_activation_reduced_mode_finalize_replays_without_enabling_delivery(
     assert projection.json()["activationProductId"] == str(graph.product.id)
     assert [stage["stage"] for stage in projection.json()["stages"]] == [
         "product",
-        "evidence",
         "profile",
         "search",
         "first_run",
@@ -542,9 +541,8 @@ def test_activation_finalize_returns_all_source_blockers_for_incomplete_product(
         json={},
     )
     assert response.status_code == 409
-    assert response.json()["code"] == "repository_evidence_decision_required"
+    assert response.json()["code"] == "approved_product_profile_required"
     assert response.json()["metadata"]["blockers"] == [
-        "repository_evidence_decision_required",
         "approved_product_profile_required",
         "successful_website_crawl_required",
         "search_connection_or_explicit_reduced_mode_required",
@@ -793,6 +791,22 @@ def test_today_keeps_previous_report_when_new_run_is_pending_or_failed(
     failed = client.get(f"{root(graph)}/today", headers=auth(graph.viewer)).json()
     assert failed["currentRun"]["status"] == "failed"
     assert failed["latestFinalizedReport"]["id"] == str(graph.plan.id)
+
+    async def stop_for_profile_correction() -> None:
+        async with sessions() as db:
+            run = await db.get(OperatorRun, pending_id)
+            assert run is not None
+            run.status = "stopped"
+            run.failure_category = None
+            run.stopped_reason = "{'reason': 'missing_approved_profile'}"
+            await db.commit()
+
+    client.portal.call(stop_for_profile_correction)
+    stopped = client.get(f"{root(graph)}/today", headers=auth(graph.viewer)).json()
+    assert stopped["currentRun"]["correctiveAction"] == {
+        "reason": "Approved product details are required before this report can run.",
+        "href": f"/users/products/{graph.product.id}/profile",
+    }
 
 
 def test_operator_readiness_config_and_product_summaries(phase5_client: Phase5Client) -> None:
@@ -1841,7 +1855,7 @@ async def test_weekly_workflow_ready_replay_and_stopped_detection(
     assert stopped["status"] == "stopped"
     async with sessions() as db:
         persisted = await db.get(OperatorRun, stopped_run_id)
-        assert persisted is not None and persisted.stopped_reason == "{'reason': 'no_sources'}"
+        assert persisted is not None and persisted.stopped_reason == "no_sources"
 
 
 @pytest.mark.asyncio

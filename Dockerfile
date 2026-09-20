@@ -23,7 +23,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 WORKDIR /app
 
-RUN addgroup --system app && adduser --system --ingroup app app
+RUN addgroup --system app && adduser --system --ingroup app app && mkdir -p /app/logs && chown app:app /app/logs
 
 COPY --from=builder --chown=app:app /app /app
 

@@ -3,7 +3,6 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
 
 from app.modules.operator.policies.lexical_match_policy import (
     match_capability,
@@ -115,17 +114,18 @@ async def test_snapshot_persistence_flushes_without_commit_and_checks_tenant_and
         )
 
 
-def test_profile_objective_remains_required() -> None:
-    with pytest.raises(ValidationError):
-        DetectionInput.model_validate(
-            {
-                "schema_version": "1",
-                "workspace_id": uuid4(),
-                "product_id": uuid4(),
-                "as_of": NOW,
-                "profile": {"profile_version": 1},
-            }
-        )
+def test_profile_objective_is_optional() -> None:
+    value = DetectionInput.model_validate(
+        {
+            "schema_version": "1",
+            "workspace_id": uuid4(),
+            "product_id": uuid4(),
+            "as_of": NOW,
+            "profile": {"profile_version": 1},
+        }
+    )
+
+    assert value.profile.objective is None
 
 
 def test_nullable_indexability_and_semantically_ordered_headings_survive_canonicalization() -> None:

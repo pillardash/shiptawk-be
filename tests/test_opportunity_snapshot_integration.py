@@ -1200,6 +1200,9 @@ async def test_missing_product_profile_and_inactive_optional_sources(
             await assemble_detection_input(db, graph.workspace_id, uuid4(), NOW)
         profile = await db.get(ProductProfile, graph.profile_id)
         assert profile is not None
+        profile.quarterly_objective = None
+        without_objective = await assembled(db, graph)
+        assert without_objective.detection_input.profile.objective is None
         profile.status = ProductProfileStatus.superseded
         await db.flush()
         with pytest.raises(MissingApprovedProfileError):

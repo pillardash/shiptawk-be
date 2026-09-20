@@ -368,7 +368,7 @@ async def assemble_detection_input(
         raise MissingProductError(
             f"Product {product_id} does not exist in workspace {workspace_id}."
         )
-    if profile is None or profile.version is None or not profile.quarterly_objective:
+    if profile is None or profile.version is None:
         raise MissingApprovedProfileError("A complete approved product profile is required.")
     capabilities = tuple(
         sorted(

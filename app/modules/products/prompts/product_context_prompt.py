@@ -5,7 +5,7 @@ from app.modules.products.models import Product
 from app.modules.products.schemas.product_schema import ProductContextGeneratedOutput
 from app.modules.repos.schemas.product_repository_evidence_schema import ProductRepositoryEvidence
 
-PROMPT_VERSION = "product-context.v1"
+PROMPT_VERSION = "product-context.v2"
 ROUTE_NAME = "product-context"
 
 
@@ -42,7 +42,9 @@ def build_product_context_envelope(
                 content=(
                     "Return strict JSON product context grounded only in the supplied public "
                     "product and repository evidence. Do not invent claims or private "
-                    "implementation details. Refuse if the evidence cannot be used safely."
+                    "implementation details. Identify the product's market and state its main "
+                    "customer value proposition in plain language. Refuse if the evidence cannot "
+                    "be used safely."
                 ),
             ),
             PromptMessage(role="user", content=json.dumps(public_input, separators=(",", ":"))),

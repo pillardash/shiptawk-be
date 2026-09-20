@@ -207,7 +207,12 @@ class WeeklyOperatorWorkflow:
                 run = await db.get(OperatorRun, run_id)
                 assert run is not None
                 run.status = "stopped"
-                run.stopped_reason = str(detection_result.get("summary", {}))[:500]
+                detection_summary = detection_result.get("summary", {})
+                run.stopped_reason = (
+                    str(detection_summary.get("reason", "opportunity_detection_stopped"))
+                    if isinstance(detection_summary, dict)
+                    else "opportunity_detection_stopped"
+                )[:500]
                 await db.commit()
             return {"status": "stopped", "runId": str(run_id), "detection": detection_result}
 

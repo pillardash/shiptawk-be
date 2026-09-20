@@ -34,3 +34,8 @@ def test_accepts_public_hostname_without_performing_dns() -> None:
     assert validate_public_website_url("https://www.example.com/features") == (
         "https://www.example.com/features"
     )
+
+
+def test_adds_https_to_bare_public_hostname() -> None:
+    assert validate_public_website_url("example.com/features") == "https://example.com/features"
+    assert normalize_website_url("example.com/features") == "https://example.com/features"

@@ -1,5 +1,6 @@
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal, cast
 from urllib.parse import urlsplit
 
@@ -48,6 +49,10 @@ class Settings(BaseSettings):
     cors_allow_credentials: bool = True
     log_level: LogLevel = "INFO"
     log_format: LogFormat = "console"
+    log_file_enabled: bool = True
+    log_file_path: Path = Path("logs/errors.log")
+    ai_content_log_enabled: bool = False
+    ai_content_log_path: Path = Path("logs/ai.log")
     jwt_secret_key: str = "change-me"
     token_encryption_key: SecretStr | None = None
     jwt_algorithm: str = "HS256"
@@ -420,6 +425,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_settings(self) -> "Settings":
+        if self.ai_content_log_enabled and self.app_env not in {"local", "test"}:
+            raise ValueError(
+                "AI_CONTENT_LOG_ENABLED is only allowed in local or test environments."
+            )
         if self.cache_backend == "redis" and not self.redis_url:
             raise ValueError("REDIS_URL is required when CACHE_BACKEND=redis.")
         if self.browser_cookie_samesite == "none" and not self.browser_cookie_secure:

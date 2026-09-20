@@ -955,7 +955,8 @@ def test_callback_rejects_missing_scope_and_openapi_exposes_no_credentials(
     }
     rendered = str(search_contract).lower()
     assert callback.status_code == 307
-    assert callback.headers["location"].endswith("&search=error")
+    assert "search=error" in callback.headers["location"]
+    assert "searchError=required_scopes_missing" in callback.headers["location"]
     assert client.portal.call(connection_count) == 0
     assert "accesstoken" not in rendered
     assert "refreshtoken" not in rendered

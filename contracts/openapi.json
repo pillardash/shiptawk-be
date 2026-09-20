@@ -1051,7 +1051,6 @@
       "ActivationStageName": {
         "enum": [
           "product",
-          "evidence",
           "profile",
           "search",
           "first_run"
@@ -2562,6 +2561,26 @@
         ],
         "title": "DraftStatus",
         "type": "string"
+      },
+      "EmailVerificationRequest": {
+        "properties": {
+          "code": {
+            "pattern": "^\\d{6}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "code"
+        ],
+        "title": "EmailVerificationRequest",
+        "type": "object"
       },
       "EventEvaluationResponse": {
         "properties": {
@@ -4868,6 +4887,55 @@
         "title": "PaginationResponse",
         "type": "object"
       },
+      "PasswordLoginRequest": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "PasswordLoginRequest",
+        "type": "object"
+      },
+      "PasswordRegistrationRequest": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 128,
+            "minLength": 12,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "password"
+        ],
+        "title": "PasswordRegistrationRequest",
+        "type": "object"
+      },
       "PlanListResponse": {
         "properties": {
           "items": {
@@ -5196,6 +5264,14 @@
             "title": "Founderstoryangle",
             "type": "string"
           },
+          "mainMarket": {
+            "title": "Mainmarket",
+            "type": "string"
+          },
+          "mainValueProposition": {
+            "title": "Mainvalueproposition",
+            "type": "string"
+          },
           "messagingAngle": {
             "title": "Messagingangle",
             "type": "string"
@@ -5244,6 +5320,8 @@
           "description",
           "websiteUrl",
           "targetAudience",
+          "mainMarket",
+          "mainValueProposition",
           "messagingAngle",
           "toneOverride",
           "blockedTerms",
@@ -7241,7 +7319,6 @@
       },
       "RepositoryEvidenceDecision": {
         "enum": [
-          "undecided",
           "connected",
           "deferred"
         ],
@@ -9909,6 +9986,17 @@
             "title": "Isverified",
             "type": "boolean"
           },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "updatedAt": {
             "format": "date-time",
             "title": "Updatedat",
@@ -9918,6 +10006,7 @@
         "required": [
           "id",
           "email",
+          "name",
           "isActive",
           "isVerified",
           "createdAt",
@@ -11289,6 +11378,47 @@
         ]
       }
     },
+    "/v1/auth/browser/login": {
+      "post": {
+        "operationId": "login_password_account_v1_auth_browser_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login Password Account",
+        "tags": [
+          "browser-auth"
+        ]
+      }
+    },
     "/v1/auth/browser/logout": {
       "post": {
         "operationId": "logout_v1_auth_browser_logout_post",
@@ -11526,6 +11656,47 @@
         ]
       }
     },
+    "/v1/auth/browser/verify-email": {
+      "post": {
+        "operationId": "verify_password_account_v1_auth_browser_verify_email_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailVerificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Password Account",
+        "tags": [
+          "browser-auth"
+        ]
+      }
+    },
     "/v1/auth/browser/workspaces": {
       "get": {
         "operationId": "available_workspaces_v1_auth_browser_workspaces_get",
@@ -11548,6 +11719,73 @@
         "summary": "Available Workspaces",
         "tags": [
           "browser-auth"
+        ]
+      }
+    },
+    "/v1/auth/me": {
+      "get": {
+        "operationId": "me_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/register": {
+      "post": {
+        "operationId": "register_password_account_v1_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordRegistrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Password Account",
+        "tags": [
+          "auth"
         ]
       }
     },

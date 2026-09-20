@@ -117,16 +117,7 @@ def test_product_profile_first_draft_approval_and_version_history(
             "primaryAudience",
             "primaryCustomerProblem",
             "mainValueProposition",
-            "primaryConversionGoal",
-            "primaryConversionUrl",
             "mainMarket",
-            "differentiation",
-            "importantCapabilities",
-            "quarterlyObjective",
-            "restrictedTopics",
-            "restrictedClaims",
-            "restrictedLanguage",
-            "brandVoiceGuidance",
         ],
         "approvedProfileId": approved.json()["id"],
         "approvedProfileVersion": 1,
@@ -153,7 +144,7 @@ def test_product_profile_first_draft_approval_and_version_history(
     assert readiness["profileReady"] is True
     assert readiness["approvedProfileId"] == approved.json()["id"]
     assert readiness["approvedProfileVersion"] == 1
-    assert readiness["draftMissingFields"] == ["importantCapabilities", "quarterlyObjective"]
+    assert readiness["draftMissingFields"] == []
 
     run = client.post(
         f"/v1/workspaces/{workspace.id}/products/{product.id}/operator/runs",

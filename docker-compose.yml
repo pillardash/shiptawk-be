@@ -25,9 +25,12 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001}
     ports:
       - "${PORT:-8000}:8000"
+    volumes:
+      - backend_logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   postgres_data:
+  backend_logs:

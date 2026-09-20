@@ -44,7 +44,7 @@ class Product(UuidPrimaryKeyMixin, Base):
             name="products_search_mode",
         ),
         CheckConstraint(
-            "repository_evidence_mode IN ('undecided', 'connected', 'deferred')",
+            "repository_evidence_mode IN ('connected', 'deferred')",
             name="products_repository_evidence_mode",
         ),
     )
@@ -114,7 +114,7 @@ class Product(UuidPrimaryKeyMixin, Base):
     )
     search_mode_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     repository_evidence_mode: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="undecided", server_default="undecided"
+        String(16), nullable=False, default="deferred", server_default="deferred"
     )
     repository_evidence_mode_decided_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)

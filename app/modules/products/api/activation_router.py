@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, status
 
 from app.api.deps import DbDep, MutationUserDep, get_current_user
+from app.core.config import get_settings
 from app.modules.identity.models.users import User
 from app.modules.operator.models import OperatorRun
 from app.modules.operator.policies import WRITE_ROLES, require_role
@@ -64,6 +65,7 @@ def _run_summary(run: OperatorRun | None) -> ActivationRunSummary | None:
 
 
 def _projection(state: ActivationState) -> ActivationProjection:
+    search_provider_available = get_settings().google_search_enabled
     product = state.product
     product_id = product.id if product else None
     product_href = f"/users/products/{product_id}" if product_id else "/users/products"
@@ -78,29 +80,7 @@ def _projection(state: ActivationState) -> ActivationProjection:
             completed_at=product.created_at if product else None,
         )
     )
-    evidence_blockers = []
-    evidence_commands = []
     repository_mode = product.repository_evidence_mode if product else None
-    if repository_mode == "undecided":
-        evidence_blockers.append("repository_evidence_decision_required")
-        evidence_commands.append(ActivationCommand.choose_repository_evidence)
-        if not state.github_installed:
-            evidence_commands.append(ActivationCommand.attach_github)
-        evidence_commands.append(ActivationCommand.monitor_repositories)
-    elif repository_mode == "connected" and not state.monitored_repository_count:
-        evidence_blockers.append("monitored_product_repository_required")
-        evidence_commands.append(ActivationCommand.monitor_repositories)
-    stages.append(
-        ActivationStageProjection(
-            stage=ActivationStageName.evidence,
-            status=ActivationStageStatus.complete
-            if not evidence_blockers and product
-            else ActivationStageStatus.blocked,
-            blockers=evidence_blockers,
-            allowed_commands=evidence_commands,
-            canonical_href=f"{product_href}/repositories" if product else "/users/products",
-        )
-    )
     stages.append(
         ActivationStageProjection(
             stage=ActivationStageName.profile,
@@ -123,7 +103,8 @@ def _projection(state: ActivationState) -> ActivationProjection:
             search_commands.append(ActivationCommand.crawl_website)
     if not state.search_ready:
         search_blockers.append("search_connection_or_explicit_reduced_mode_required")
-        search_commands.append(ActivationCommand.connect_search)
+        if search_provider_available:
+            search_commands.append(ActivationCommand.connect_search)
         if REDUCED_CAPABILITY_ALLOWED:
             search_commands.append(ActivationCommand.defer_search)
     stages.append(
@@ -260,6 +241,7 @@ def _projection(state: ActivationState) -> ActivationProjection:
             else None
         ),
         reduced_capability_allowed=REDUCED_CAPABILITY_ALLOWED,
+        search_provider_available=search_provider_available,
         stages=stages,
         active_run=_run_summary(state.active_run),
         current_run=_run_summary(state.current_run),

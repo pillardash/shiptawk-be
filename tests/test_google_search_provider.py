@@ -11,6 +11,8 @@ from app.modules.search_intelligence.providers.search.search_provider import (
     SearchAuthorizationGrant,
     SearchPerformanceRequest,
     SearchProviderAuthorizationError,
+    SearchProviderConfigurationError,
+    SearchProviderError,
     SearchProviderInvalidResponseError,
     SearchProviderRateLimitError,
     SearchProviderTransientError,
@@ -105,12 +107,43 @@ async def test_exchange_and_refresh_send_exact_forms_and_preserve_refresh_token(
 
 
 @pytest.mark.asyncio
+async def test_exchange_normalizes_google_email_scope_alias_and_preserves_missing_scope() -> None:
+    provider, client = _provider(
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "access_token": "new-access",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                    "scope": "openid https://www.googleapis.com/auth/userinfo.email "
+                    "https://www.googleapis.com/auth/webmasters.readonly",
+                },
+            )
+        )
+    )
+
+    exchanged = await provider.exchange_code(
+        code="authorization-code",
+        code_verifier="verifier",
+        redirect_uri="https://app.example.com/oauth/callback",
+    )
+
+    await client.aclose()
+    assert exchanged.scopes == (
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/webmasters.readonly",
+    )
+
+
+@pytest.mark.asyncio
 async def test_identity_discovery_revocation_and_performance_requests_are_exact() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/oauth2/v3/userinfo":
+        if request.url.path == "/v1/userinfo":
             return httpx.Response(200, json={"sub": "123", "email": "owner@example.com"})
         if request.url.path == "/webmasters/v3/sites":
             return httpx.Response(
@@ -155,6 +188,7 @@ async def test_identity_discovery_revocation_and_performance_requests_are_exact(
     await client.aclose()
     assert (identity.subject, identity.email) == ("123", "owner@example.com")
     assert properties[0].property_type == "domain"
+    assert str(requests[0].url) == "https://openidconnect.googleapis.com/v1/userinfo"
     assert requests[0].headers["authorization"] == "Bearer access-secret"
     assert requests[2].url.raw_path == (
         b"/webmasters/v3/sites/sc-domain%3Aexample.com/searchAnalytics/query"
@@ -290,6 +324,18 @@ async def test_http_errors_are_categorized_and_sanitized(
             SearchProviderRateLimitError,
             "google_rate_limited",
         ),
+        (
+            403,
+            {
+                "error": {
+                    "status": "PERMISSION_DENIED",
+                    "details": [{"reason": "SERVICE_DISABLED"}],
+                }
+            },
+            "identity",
+            SearchProviderConfigurationError,
+            "google_search_api_not_enabled",
+        ),
     ],
 )
 async def test_invalid_grant_and_quota_errors_map_to_sanitized_domain_errors(
@@ -310,6 +356,33 @@ async def test_invalid_grant_and_quota_errors_map_to_sanitized_domain_errors(
     await client.aclose()
     assert "provider-body-secret" not in str(caught.value)
     assert "access-secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_property_discovery_rejection_is_operation_specific_and_sanitized(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "provider-body-secret"
+    provider, client = _provider(
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                400,
+                headers={"x-request-id": "google-request-1"},
+                json={"error": {"message": secret, "status": "INVALID_ARGUMENT"}},
+            )
+        )
+    )
+
+    with pytest.raises(SearchProviderError, match="google_property_discovery_rejected"):
+        await provider.list_properties(_grant())
+
+    await client.aclose()
+    assert "operation=list_properties" in caplog.text
+    assert "status=400" in caplog.text
+    assert "provider_status=INVALID_ARGUMENT" in caplog.text
+    assert "provider_request_id=google-request-1" in caplog.text
+    assert secret not in caplog.text
+    assert "access-secret" not in caplog.text
 
 
 @pytest.mark.asyncio

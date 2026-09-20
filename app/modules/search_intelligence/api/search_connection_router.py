@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
@@ -38,6 +39,7 @@ product_search_router = APIRouter(
 )
 search_callback_router = APIRouter(prefix="/integrations/search", tags=["search-intelligence"])
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+logger = logging.getLogger(__name__)
 
 
 def _resources(request: Request) -> SearchIntelligenceResources:
@@ -97,10 +99,12 @@ def _source_response(source, item, initial_sync_run=None) -> SearchSourceRespons
     )
 
 
-def _frontend_redirect(return_path: str, status: str) -> str:
+def _frontend_redirect(return_path: str, status: str, error_code: str | None = None) -> str:
     parsed = urlsplit(return_path)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     query["search"] = status
+    if error_code:
+        query["searchError"] = error_code
     path = urlunsplit(("", "", parsed.path, urlencode(query), ""))
     return f"{get_settings().frontend_url}{path}"
 
@@ -189,8 +193,20 @@ async def search_callback(
             grant=grant,
             vault=_vault(resources),
         )
-    except (CredentialVaultError, SearchProviderError):
-        return RedirectResponse(_frontend_redirect(consumed.return_path, "error"))
+    except (CredentialVaultError, SearchProviderError) as exc:
+        error_code = (
+            exc.code if isinstance(exc, SearchProviderError) else "search_credentials_unavailable"
+        )
+        logger.warning(
+            "Search OAuth callback failed workspace_id=%s product_id=%s provider=%s "
+            "error_type=%s error_code=%s",
+            binding.workspace_id,
+            binding.subject_id,
+            provider,
+            type(exc).__name__,
+            error_code,
+        )
+        return RedirectResponse(_frontend_redirect(consumed.return_path, "error", error_code))
     return RedirectResponse(_frontend_redirect(consumed.return_path, "connected"))
 
 

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -25,9 +26,52 @@ from app.modules.search_intelligence.providers.search.search_provider import (
 AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 REVOCATION_ENDPOINT = "https://oauth2.googleapis.com/revoke"
-USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/oauth2/v3/userinfo"
+USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
 SITES_ENDPOINT = "https://www.googleapis.com/webmasters/v3/sites"
 SCOPES = ("openid", "email", "https://www.googleapis.com/auth/webmasters.readonly")
+SCOPE_ALIASES = {"https://www.googleapis.com/auth/userinfo.email": "email"}
+logger = logging.getLogger(__name__)
+
+
+def normalize_scopes(scopes: object) -> tuple[str, ...]:
+    if not isinstance(scopes, str):
+        return ()
+    return tuple(dict.fromkeys(SCOPE_ALIASES.get(scope, scope) for scope in scopes.split()))
+
+
+def _operation(url: str) -> str:
+    return {
+        TOKEN_ENDPOINT: "token_exchange",
+        USERINFO_ENDPOINT: "userinfo",
+        SITES_ENDPOINT: "list_properties",
+    }.get(url, "search_performance")
+
+
+def _error_details(response: httpx.Response) -> tuple[str | None, tuple[str, ...]]:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, ()
+    if not isinstance(payload, dict) or not isinstance(payload.get("error"), dict):
+        return None, ()
+    error = payload["error"]
+    status = error.get("status") if isinstance(error.get("status"), str) else None
+    reasons: list[str] = []
+    legacy = error.get("errors", [])
+    if isinstance(legacy, list):
+        reasons.extend(
+            reason
+            for item in legacy
+            if isinstance(item, dict) and isinstance((reason := item.get("reason")), str)
+        )
+    details = error.get("details", [])
+    if isinstance(details, list):
+        reasons.extend(
+            reason
+            for item in details
+            if isinstance(item, dict) and isinstance((reason := item.get("reason")), str)
+        )
+    return status, tuple(dict.fromkeys(reasons))
 
 
 class GoogleSearchProvider:
@@ -85,6 +129,19 @@ class GoogleSearchProvider:
             )
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise SearchProviderTransientError("google_transport_failure") from exc
+        operation = _operation(url)
+        provider_status, reasons = _error_details(response)
+        if response.is_error:
+            logger.warning(
+                "Google Search request failed operation=%s status=%s provider_status=%s "
+                "reasons=%s provider_request_id=%s",
+                operation,
+                response.status_code,
+                provider_status,
+                list(reasons),
+                response.headers.get("x-request-id")
+                or response.headers.get("x-guploader-uploadid"),
+            )
         if response.status_code == 400 and url == TOKEN_ENDPOINT:
             try:
                 payload = response.json()
@@ -93,23 +150,13 @@ class GoogleSearchProvider:
             if isinstance(payload, dict) and payload.get("error") == "invalid_grant":
                 raise SearchProviderAuthorizationError("google_authorization_failed")
         if response.status_code == 403:
-            reasons: set[str] = set()
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            if isinstance(payload, dict):
-                error = payload.get("error")
-                details = error.get("errors", []) if isinstance(error, dict) else []
-                if isinstance(details, list):
-                    reasons = {
-                        reason
-                        for item in details
-                        if isinstance(item, dict)
-                        and isinstance((reason := item.get("reason")), str)
-                    }
-            if reasons & {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded"}:
+            reason_set = set(reasons)
+            if reason_set & {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded"}:
                 raise SearchProviderRateLimitError("google_rate_limited")
+            if reason_set & {"accessNotConfigured", "SERVICE_DISABLED", "API_DISABLED"}:
+                raise SearchProviderConfigurationError("google_search_api_not_enabled")
+            if reason_set & {"insufficientPermissions", "ACCESS_DENIED"}:
+                raise SearchProviderAuthorizationError("google_search_property_access_denied")
             raise SearchProviderAuthorizationError("google_authorization_failed")
         if response.status_code == 401:
             raise SearchProviderAuthorizationError("google_authorization_failed")
@@ -118,7 +165,12 @@ class GoogleSearchProvider:
         if response.status_code >= 500:
             raise SearchProviderTransientError("google_service_unavailable")
         if response.is_error:
-            raise SearchProviderError("google_request_rejected")
+            code = {
+                "token_exchange": "google_token_exchange_rejected",
+                "userinfo": "google_identity_request_rejected",
+                "list_properties": "google_property_discovery_rejected",
+            }.get(operation, "google_search_request_rejected")
+            raise SearchProviderError(code)
         return response
 
     @staticmethod
@@ -157,7 +209,9 @@ class GoogleSearchProvider:
             access_token,
             refresh,
             self._now() + timedelta(seconds=expires_in),
-            tuple(scope.split()) if isinstance(scope, str) else preserved_scopes,
+            normalize_scopes(scope)
+            if isinstance(scope, str)
+            else normalize_scopes(" ".join(preserved_scopes)),
             token_type,
         )
 
@@ -174,6 +228,7 @@ class GoogleSearchProvider:
                 "redirect_uri": redirect_uri,
             },
             None,
+            SCOPES,
         )
 
     async def refresh_authorization(

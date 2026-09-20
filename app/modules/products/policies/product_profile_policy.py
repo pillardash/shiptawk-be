@@ -12,27 +12,12 @@ REQUIRED_FIELDS = (
     "primary_audience",
     "primary_customer_problem",
     "main_value_proposition",
-    "primary_conversion_goal",
-    "primary_conversion_url",
     "main_market",
-    "differentiation",
-    "important_capabilities",
-    "quarterly_objective",
-    "restricted_topics",
-    "restricted_claims",
-    "restricted_language",
-    "brand_voice_guidance",
 )
 
 
 def completeness(values: Mapping[str, Any]) -> tuple[int, list[str]]:
-    optional_restriction_lists = {"restricted_topics", "restricted_claims", "restricted_language"}
-    missing = [
-        field
-        for field in REQUIRED_FIELDS
-        if field not in values
-        or (not values.get(field) and field not in optional_restriction_lists)
-    ]
+    missing = [field for field in REQUIRED_FIELDS if field not in values or not values.get(field)]
     return round((len(REQUIRED_FIELDS) - len(missing)) * 100 / len(REQUIRED_FIELDS)), missing
 
 

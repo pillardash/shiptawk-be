@@ -68,14 +68,16 @@
 ## Verification
 
 - Batch verification after a coherent implementation slice. Do not run tests after every individual service, schema, or route change unless diagnosing a specific failure.
+- Default to focused tests and checks for the implementation being changed. Do not run the entire backend suite or repository-wide coverage after routine updates.
+- Run the full test suite and coverage only when the user explicitly requests it, when preparing a release, or when a high-risk cross-cutting change cannot be covered confidently by focused tests.
 
-Run after backend changes:
+Run the relevant subset after backend changes:
 
 ```bash
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy app tests
-uv run pytest --cov
+uv run pytest <relevant-test-files>
 ```
 
 - Run Alembic upgrades against PostgreSQL for migration changes.

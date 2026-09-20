@@ -272,7 +272,15 @@ def _run(row: OperatorRun) -> RunProjection:
     corrective = None
     if row.status in {"failed", "stopped"}:
         reason = row.stopped_reason or row.failure_category or "operator_run_failed"
-        corrective = CorrectiveActionProjection(reason=reason, href="/users/settings/connections")
+        if "missing_approved_profile" in reason:
+            corrective = CorrectiveActionProjection(
+                reason="Approved product details are required before this report can run.",
+                href=f"/users/products/{row.product_id}/profile",
+            )
+        else:
+            corrective = CorrectiveActionProjection(
+                reason=reason.replace("_", " "), href="/users/settings/connections"
+            )
     return RunProjection(
         id=row.id,
         run_kind=row.run_kind,

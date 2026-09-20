@@ -6,12 +6,13 @@ from app.modules.products.policies.product_profile_policy import (
 from app.modules.workspaces.enums import WorkspaceRole
 
 
-def test_completeness_requires_all_context_fields() -> None:
+def test_completeness_requires_core_product_context() -> None:
     score, missing = completeness({})
 
     assert score == 0
     assert "primary_audience" in missing
-    assert "brand_voice_guidance" in missing
+    assert "main_market" in missing
+    assert "brand_voice_guidance" not in missing
 
 
 def test_completeness_counts_explicit_empty_restrictions_as_complete() -> None:

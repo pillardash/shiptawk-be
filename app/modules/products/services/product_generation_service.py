@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -39,6 +40,8 @@ from app.shared.exceptions import (
     ServiceUnavailableError,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _lines(values: list[str]) -> str:
     return "\n".join(values)
@@ -57,6 +60,8 @@ def _response(
             description=output.description,
             website_url=website_url,
             target_audience=output.target_audience,
+            main_market=output.main_market,
+            main_value_proposition=output.main_value_proposition,
             messaging_angle=output.messaging_angle,
             tone_override=output.tone_override,
             blocked_terms=_lines(product.blocked_terms),
@@ -84,6 +89,10 @@ def _saved_output(product: Product) -> ProductContextGeneratedOutput:
         name=product.name,
         description=product.description or f"{product.name} product context.",
         target_audience=product.target_audience or "Product users",
+        main_market="Software",
+        main_value_proposition=product.desired_outcome
+        or product.messaging_angle
+        or "Help customers make meaningful progress.",
         messaging_angle=product.messaging_angle or "Share concrete product progress.",
         tone_override=product.tone_override or "",
         safe_public_boundaries=product.safe_public_boundaries,
@@ -181,6 +190,16 @@ async def generate_product_context(
             code="generation_idempotency_conflict",
         ) from exc
     except (LLMInvalidResponseError, LLMPermanentError) as exc:
+        logger.error(
+            "Product context generation failed workspace_id=%s product_id=%s "
+            "error_type=%s error_code=%s cause_type=%s cause=%s",
+            workspace_id,
+            product_id,
+            type(exc).__name__,
+            str(exc),
+            type(exc.__cause__).__name__ if exc.__cause__ else "-",
+            str(exc.__cause__) if exc.__cause__ else "-",
+        )
         raise BadRequestError(
             "Product context could not be generated.", code="invalid_generation_output"
         ) from exc
@@ -188,6 +207,15 @@ async def generate_product_context(
     try:
         output = ProductContextGeneratedOutput.model_validate(persisted.validated_output)
     except ValidationError as exc:
+        logger.error(
+            "Product context generated output failed schema validation workspace_id=%s "
+            "product_id=%s error_type=%s error_count=%s fields=%s",
+            workspace_id,
+            product_id,
+            type(exc).__name__,
+            len(exc.errors()),
+            [str(error.get("loc", ())) for error in exc.errors()],
+        )
         raise BadRequestError(
             "Product context could not be generated.", code="invalid_generation_output"
         ) from exc

@@ -23,7 +23,7 @@ def upgrade() -> None:
             "repository_evidence_mode",
             sa.String(16),
             nullable=False,
-            server_default="undecided",
+            server_default="deferred",
         ),
     )
     op.add_column(
@@ -33,7 +33,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         "products_repository_evidence_mode",
         "products",
-        "repository_evidence_mode IN ('undecided', 'connected', 'deferred')",
+        "repository_evidence_mode IN ('connected', 'deferred')",
     )
     op.execute(
         "UPDATE products SET repository_evidence_mode = 'connected', "

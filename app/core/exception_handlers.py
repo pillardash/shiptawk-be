@@ -49,6 +49,15 @@ def validation_errors(exc: RequestValidationError) -> list[ValidationErrorItem]:
 
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    logger.log(
+        logging.ERROR if exc.status_code >= 500 else logging.WARNING,
+        "Handled application error method=%s path=%s status=%s code=%s detail=%s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.code,
+        exc.message,
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content=error_payload(request, exc.message, exc.code, exc.metadata),
@@ -56,13 +65,20 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    errors = validation_errors(exc)
+    logger.warning(
+        "Request validation failed method=%s path=%s errors=%s",
+        request.method,
+        request.url.path,
+        [item.model_dump() for item in errors],
+    )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content=ValidationErrorResponse(
             detail="Request validation failed.",
             code="validation_error",
             request_id=get_request_id(request),
-            errors=validation_errors(exc),
+            errors=errors,
         ).model_dump(by_alias=True),
     )
 
@@ -73,6 +89,15 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     if not settings.expose_errors and exc.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
         detail = "Internal server error."
     code = "unauthorized" if exc.status_code == status.HTTP_401_UNAUTHORIZED else "http_error"
+    logger.log(
+        logging.ERROR if exc.status_code >= 500 else logging.WARNING,
+        "HTTP error method=%s path=%s status=%s code=%s detail=%s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        code,
+        detail,
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content=error_payload(request, detail, code),

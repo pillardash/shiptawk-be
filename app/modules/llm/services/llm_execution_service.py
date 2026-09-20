@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -131,6 +132,14 @@ class LLMExecutionService:
                     await db.commit()
                 else:
                     await db.rollback()
+                    logger.error(
+                        "LLM execution replay rejected execution_id=%s workspace_id=%s "
+                        "product_id=%s use_case=%s reason=non_retryable_failure",
+                        execution.id,
+                        workspace_id,
+                        product_id,
+                        use_case,
+                    )
                     raise LLMInvalidResponseError("llm_execution_failed_non_retryable")
 
         token = uuid4()
@@ -168,9 +177,72 @@ class LLMExecutionService:
                 name=f"llm-lease-heartbeat:{execution.id}",
             )
             try:
+                ai_logger.info(
+                    json.dumps(
+                        {
+                            "event": "request",
+                            "execution_id": str(execution.id),
+                            "workspace_id": str(workspace_id),
+                            "product_id": str(product_id),
+                            "use_case": use_case,
+                            "attempt": attempt_number,
+                            "provider": registration.provider,
+                            "model": registration.model,
+                            "prompt": request.model_dump(mode="json"),
+                        },
+                        ensure_ascii=True,
+                    )
+                )
                 generated = await self._providers.get(registration.provider).generate(request)
+                ai_logger.info(
+                    json.dumps(
+                        {
+                            "event": "response",
+                            "execution_id": str(execution.id),
+                            "workspace_id": str(workspace_id),
+                            "product_id": str(product_id),
+                            "use_case": use_case,
+                            "attempt": attempt_number,
+                            "provider": registration.provider,
+                            "model": registration.model,
+                            "response": generated.model_dump(mode="json"),
+                        },
+                        ensure_ascii=True,
+                    )
+                )
             except LLMProviderError as exc:
+                ai_logger.info(
+                    json.dumps(
+                        {
+                            "event": "error",
+                            "execution_id": str(execution.id),
+                            "workspace_id": str(workspace_id),
+                            "product_id": str(product_id),
+                            "use_case": use_case,
+                            "attempt": attempt_number,
+                            "provider": registration.provider,
+                            "model": registration.model,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                        ensure_ascii=True,
+                    )
+                )
                 last_error = exc
+                logger.error(
+                    "LLM provider request failed execution_id=%s workspace_id=%s "
+                    "product_id=%s use_case=%s attempt=%s provider=%s model=%s "
+                    "error_type=%s error_code=%s",
+                    execution.id,
+                    workspace_id,
+                    product_id,
+                    use_case,
+                    attempt_number,
+                    registration.provider,
+                    registration.model,
+                    type(exc).__name__,
+                    str(exc),
+                )
                 await self._record_attempt(
                     execution,
                     token,
@@ -196,6 +268,21 @@ class LLMExecutionService:
             usage = generated.telemetry.usage
             if generated.telemetry.refusal or generated.output is None:
                 refusal_error = LLMInvalidResponseError("llm_refusal_or_empty_output")
+                logger.error(
+                    "LLM provider returned no usable output execution_id=%s workspace_id=%s "
+                    "product_id=%s use_case=%s attempt=%s provider=%s model=%s "
+                    "refusal=%s finish_reason=%s provider_request_id=%s",
+                    execution.id,
+                    workspace_id,
+                    product_id,
+                    use_case,
+                    attempt_number,
+                    registration.provider,
+                    registration.model,
+                    generated.telemetry.refusal,
+                    generated.telemetry.finish_reason,
+                    generated.telemetry.provider_request_id,
+                )
                 await self._record_attempt(
                     execution,
                     token,
@@ -218,6 +305,20 @@ class LLMExecutionService:
                     raise ValueError("validated output exceeds retention limit")
             except (TypeError, ValueError) as exc:
                 validation_error = LLMOutputValidationError("llm_output_validation_failed")
+                logger.error(
+                    "LLM output validation failed execution_id=%s workspace_id=%s "
+                    "product_id=%s use_case=%s attempt=%s provider=%s model=%s "
+                    "error_type=%s error_code=%s",
+                    execution.id,
+                    workspace_id,
+                    product_id,
+                    use_case,
+                    attempt_number,
+                    registration.provider,
+                    registration.model,
+                    type(exc).__name__,
+                    str(exc),
+                )
                 await self._record_attempt(
                     execution,
                     token,
@@ -396,3 +497,7 @@ class LLMExecutionService:
                 await db.rollback()
                 raise LLMLeaseLostError("llm_execution_lease_lost")
             await db.commit()
+
+
+logger = logging.getLogger(__name__)
+ai_logger = logging.getLogger("ai.content")

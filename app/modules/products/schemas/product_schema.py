@@ -150,6 +150,8 @@ class ProductContextGeneratedOutput(ApiSchema):
     name: ProductText = Field(min_length=1, max_length=120)
     description: ProductText = Field(min_length=1, max_length=1200)
     target_audience: ProductText = Field(min_length=1, max_length=180)
+    main_market: ProductText = Field(min_length=1, max_length=180)
+    main_value_proposition: ProductText = Field(min_length=1, max_length=300)
     messaging_angle: ProductText = Field(min_length=1, max_length=220)
     tone_override: Literal["", "casual", "technical", "hype"] = ""
     safe_public_boundaries: list[
@@ -177,6 +179,8 @@ class ProductContextPrefillDraft(ApiSchema):
     description: str
     website_url: str
     target_audience: str
+    main_market: str
+    main_value_proposition: str
     messaging_angle: str
     tone_override: Literal["", "casual", "technical", "hype"]
     blocked_terms: str

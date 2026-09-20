@@ -38,7 +38,7 @@ class ProductProfileSnapshot(ImmutableContract):
     schema_version: str = "1"
     status: Literal["draft", "approved", "archived"] = "approved"
     completeness: Score = Decimal("100")
-    objective: Annotated[str, Field(min_length=1, max_length=1000)]
+    objective: Annotated[str, Field(min_length=1, max_length=1000)] | None = None
     audience: str | None = None
     conversion_action: str | None = None
     conversion_url: str | None = None

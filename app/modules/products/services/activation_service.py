@@ -66,13 +66,6 @@ class ActivationState:
         blockers: list[str] = []
         if self.product is None:
             return ["activation_product_required"]
-        if self.product.repository_evidence_mode == "undecided":
-            blockers.append("repository_evidence_decision_required")
-        elif (
-            self.product.repository_evidence_mode == "connected"
-            and not self.monitored_repository_count
-        ):
-            blockers.append("monitored_product_repository_required")
         if self.approved_profile is None:
             blockers.append("approved_product_profile_required")
         if not self.website_ready:
@@ -395,11 +388,6 @@ async def set_repository_evidence_mode(
     state = await read_activation_state(db, workspace_id, lock=True)
     if state.product is None or state.product.id != product_id:
         raise NotFoundError("Activation product not found.", code="activation_product_not_found")
-    if mode == "undecided":
-        raise ConflictError(
-            "Choose connected or deferred repository evidence.",
-            code="repository_evidence_decision_required",
-        )
     if mode == "connected" and not state.monitored_repository_count:
         raise ConflictError(
             "Explicitly monitor a product repository before selecting connected evidence.",

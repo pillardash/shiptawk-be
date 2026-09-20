@@ -9,6 +9,11 @@ _PRIVATE_HOST_SUFFIXES = (".internal", ".lan", ".local", ".localhost", ".home")
 _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+def _with_default_scheme(value: str) -> str:
+    stripped = value.strip()
+    return f"https://{stripped}" if "://" not in stripped else stripped
+
+
 def _validated_parts(value: str) -> tuple[SplitResult, str, int | None]:
     if not value or value != value.strip() or any(ord(character) < 32 for character in value):
         raise ValueError(PUBLIC_URL_ERROR)
@@ -51,13 +56,14 @@ def _validated_parts(value: str) -> tuple[SplitResult, str, int | None]:
 
 def validate_public_website_url(value: str) -> str:
     """Validate request-independent URL safety without resolving DNS."""
-    _validated_parts(value)
-    return value
+    normalized = _with_default_scheme(value)
+    _validated_parts(normalized)
+    return normalized
 
 
 def normalize_website_url(value: str) -> str:
     """Return a stable page identity for a syntactically safe public URL."""
-    stripped = value.strip()
+    stripped = _with_default_scheme(value)
     parsed, hostname, port = _validated_parts(stripped)
     scheme = parsed.scheme.lower()
     host_for_netloc = f"[{hostname}]" if ":" in hostname else hostname

@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from typing import Any
 
 from app.modules.llm.providers.generation_result import (
@@ -10,16 +11,51 @@ from app.modules.llm.providers.llm_exceptions import LLMInvalidResponseError
 from app.modules.llm.providers.prompt_envelope import PromptEnvelope
 
 
+def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(schema)
+
+    def visit(node: object) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                properties = node.get("properties")
+                node["additionalProperties"] = False
+                if isinstance(properties, dict):
+                    node["required"] = list(properties)
+                    for property_schema in properties.values():
+                        visit(property_schema)
+                else:
+                    node["required"] = []
+            for key in ("$defs", "definitions"):
+                definitions = node.get(key)
+                if isinstance(definitions, dict):
+                    for definition in definitions.values():
+                        visit(definition)
+            items = node.get("items")
+            if items is not None:
+                visit(items)
+            for key in ("anyOf", "oneOf", "allOf"):
+                branches = node.get(key)
+                if isinstance(branches, list):
+                    for branch in branches:
+                        visit(branch)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(normalized)
+    return normalized
+
+
 def request_payload(envelope: PromptEnvelope) -> dict[str, Any]:
     return {
         "model": envelope.model,
-        "messages": [message.model_dump() for message in envelope.messages],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
+        "input": [message.model_dump() for message in envelope.messages],
+        "text": {
+            "format": {
+                "type": "json_schema",
                 "name": envelope.output_schema_name,
                 "strict": True,
-                "schema": envelope.output_json_schema,
+                "schema": strict_schema(envelope.output_json_schema),
             },
         },
         **envelope.parameters,
@@ -32,16 +68,35 @@ def generation_result(
     if not isinstance(payload, dict):
         raise LLMInvalidResponseError("openai_invalid_response")
     try:
-        choice = payload["choices"][0]
-        message = choice["message"]
-        refusal = message.get("refusal")
-        content = message.get("content")
-        output = None if refusal is not None else json.loads(content)
+        output_items = payload["output"]
+        refusal = next(
+            (
+                part.get("refusal")
+                for item in output_items
+                if isinstance(item, dict)
+                for part in item.get("content", [])
+                if isinstance(part, dict) and isinstance(part.get("refusal"), str)
+            ),
+            None,
+        )
+        content = next(
+            (
+                part.get("text")
+                for item in output_items
+                if isinstance(item, dict)
+                for part in item.get("content", [])
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ),
+            None,
+        )
+        if refusal is None and not isinstance(content, str):
+            raise LLMInvalidResponseError("openai_malformed_structured_output")
+        output = None if refusal is not None else json.loads(str(content))
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise LLMInvalidResponseError("openai_malformed_structured_output") from exc
     usage = payload.get("usage", {})
     usage = usage if isinstance(usage, dict) else {}
-    details = usage.get("prompt_tokens_details", {})
+    details = usage.get("input_tokens_details", {})
     details = details if isinstance(details, dict) else {}
     request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
     return LLMGenerationResult(
@@ -66,9 +121,7 @@ def generation_result(
             ),
             correlation_id=envelope.correlation_id,
             provider_request_id=request_id if isinstance(request_id, str) else None,
-            finish_reason=choice.get("finish_reason")
-            if isinstance(choice.get("finish_reason"), str)
-            else None,
+            finish_reason=payload.get("status") if isinstance(payload.get("status"), str) else None,
             refusal=refusal is not None,
         ),
     )

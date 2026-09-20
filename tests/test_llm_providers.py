@@ -20,7 +20,12 @@ from app.modules.llm.providers.generation_result import LLMGenerationResult, LLM
 from app.modules.llm.providers.llm_exceptions import LLMInvalidResponseError, LLMPermanentError
 from app.modules.llm.providers.openai.openai_adapter import OpenAIAdapter
 from app.modules.llm.providers.openai.openai_client import OpenAIClient
-from app.modules.llm.providers.openai.openai_mapper import request_payload as openai_payload
+from app.modules.llm.providers.openai.openai_mapper import (
+    request_payload as openai_payload,
+)
+from app.modules.llm.providers.openai.openai_mapper import (
+    strict_schema,
+)
 from app.modules.llm.providers.prompt_envelope import PromptEnvelope, PromptMessage
 from app.modules.llm.providers.provider_registry import LLMProviderRegistry
 
@@ -69,8 +74,38 @@ def test_provider_registry_rejects_unconfigured_provider() -> None:
 def test_openai_payload_uses_caller_schema() -> None:
     payload = openai_payload(envelope())
 
-    assert payload["response_format"]["json_schema"]["name"] == "test_output"
-    assert payload["response_format"]["json_schema"]["schema"] == {"type": "object"}
+    assert payload["text"]["format"]["name"] == "test_output"
+    assert payload["text"]["format"]["schema"] == {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [],
+    }
+
+
+def test_openai_strict_schema_normalizes_nested_objects_without_mutating_input() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Item"},
+            }
+        },
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+            }
+        },
+    }
+
+    normalized = strict_schema(schema)
+
+    assert normalized["additionalProperties"] is False
+    assert normalized["required"] == ["items"]
+    assert normalized["$defs"]["Item"]["additionalProperties"] is False
+    assert normalized["$defs"]["Item"]["required"] == ["name"]
+    assert "additionalProperties" not in schema
 
 
 def test_anthropic_payload_does_not_mutate_parameters() -> None:
@@ -131,12 +166,18 @@ async def test_openai_adapter_maps_structured_output_and_usage() -> None:
             request=request,
             headers={"x-request-id": "req-1"},
             json={
-                "choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}],
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": '{"ok": true}'}],
+                    }
+                ],
                 "usage": {
                     "prompt_tokens": 2,
-                    "completion_tokens": 3,
+                    "output_tokens": 3,
                     "total_tokens": 5,
-                    "prompt_tokens_details": {"cached_tokens": 1},
+                    "input_tokens_details": {"cached_tokens": 1},
                 },
             },
         )
@@ -151,7 +192,7 @@ async def test_openai_adapter_maps_structured_output_and_usage() -> None:
     assert response.telemetry.provider_request_id == "req-1"
     assert response.telemetry.usage.total_tokens == 5
     assert response.telemetry.usage.cache_read_tokens == 1
-    assert response.telemetry.finish_reason == "stop"
+    assert response.telemetry.finish_reason == "completed"
     await client.aclose()
 
 
@@ -221,7 +262,14 @@ async def test_malformed_provider_output_is_controlled() -> None:
             lambda request: httpx.Response(
                 200,
                 request=request,
-                json={"choices": [{"message": {"content": "not-json"}}]},
+                json={
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "not-json"}],
+                        }
+                    ]
+                },
             )
         )
     )
@@ -242,8 +290,11 @@ async def test_openai_refusal_is_controlled_without_body_leakage() -> None:
                 200,
                 request=request,
                 json={
-                    "choices": [
-                        {"message": {"refusal": "sensitive provider text"}, "finish_reason": "stop"}
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "refusal", "refusal": "sensitive provider text"}],
+                        }
                     ]
                 },
             )

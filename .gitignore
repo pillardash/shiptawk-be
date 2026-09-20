@@ -20,6 +20,7 @@ wheels/
 .mypy_cache/
 .coverage
 htmlcov/
+/logs/
 
 # Local object storage
 /storage/

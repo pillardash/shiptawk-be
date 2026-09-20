@@ -13,5 +13,7 @@ The generic browser OAuth/session delta was applied selectively on 2026-07-19 wh
 uncommitted in this product repository. Product-specific GitHub registration, OAuth-only policy,
 workspace provisioning, and schema decisions remain Shiptawk-owned changes.
 
+The generic single-file warning/error logging delta was applied selectively on 2026-09-19.
+
 Future reusable changes should normally be implemented and verified in the boilerplate
 first, then applied deliberately here. Product-specific changes must not be copied back.

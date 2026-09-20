@@ -10,7 +10,6 @@ from app.shared.schemas import ApiSchema
 
 class ActivationStageName(StrEnum):
     product = "product"
-    evidence = "evidence"
     profile = "profile"
     search = "search"
     first_run = "first_run"
@@ -45,7 +44,6 @@ class SearchMode(StrEnum):
 
 
 class RepositoryEvidenceDecision(StrEnum):
-    undecided = "undecided"
     connected = "connected"
     deferred = "deferred"
 
@@ -118,6 +116,7 @@ class ActivationProjection(ApiSchema):
     repository_evidence_decision: RepositoryEvidenceDecision | None
     readiness: CapabilityReadiness | None
     reduced_capability_allowed: bool
+    search_provider_available: bool
     stages: list[ActivationStageProjection]
     active_run: ActivationRunSummary | None
     current_run: ActivationRunSummary | None

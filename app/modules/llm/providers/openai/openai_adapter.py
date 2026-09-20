@@ -16,7 +16,7 @@ class OpenAIAdapter:
 
     async def generate(self, envelope: PromptEnvelope) -> LLMGenerationResult:
         started = monotonic()
-        response = await self._client.chat_completion(request_payload(envelope))
+        response = await self._client.response(request_payload(envelope))
         return generation_result(
             payload=response.json(),
             envelope=envelope,
